@@ -1,0 +1,52 @@
+[intelligence]
+default_model = "claude-haiku-4-5"
+provider = "anthropic"
+max_tokens = 1024
+
+[engine]
+default = "cloud"
+
+[agent]
+default_agent = "orchestrator"
+max_turns = 10
+tools = "web_search,calculator,think"
+
+[agent.system_prompt]
+content = """
+You are Jarvis, a personal AI assistant. You are helpful, concise,
+and intelligent. You have access to tools and can answer questions,
+set reminders, search the web, and help manage tasks.
+When responding via voice or SMS, keep answers brief and conversational.
+"""
+
+[channels.twilio]
+enabled = true
+account_sid = "${TWILIO_ACCOUNT_SID}"
+phone_number = "${TWILIO_PHONE_NUMBER}"
+
+[speech]
+tts_backend = "elevenlabs"
+voice_id = "JBFqnCBsd6RMkjVDRZzb"
+model = "eleven_multilingual_v2"
+output_format = "mp3"
+
+[server]
+host = "0.0.0.0"
+port = 8000
+
+[server.auth]
+api_key = "${OPENJARVIS_API_KEY}"
+
+[tools.storage]
+default_backend = "sqlite"
+db_path = "~/.openjarvis/memory.db"
+
+[tools.mcp]
+enabled = true
+
+[telemetry]
+enabled = false
+
+[traces]
+enabled = true
+db_path = "~/.openjarvis/traces.db"
