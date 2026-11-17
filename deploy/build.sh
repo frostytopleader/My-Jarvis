@@ -3,8 +3,13 @@ set -euo pipefail
 
 echo "=== Jarvis build ==="
 
-# Init submodule (upstream OpenJarvis)
-git submodule update --init --recursive
+# Clone OpenJarvis fresh from upstream (bypasses submodule commit reference)
+if [ ! -d openjarvis/.git ]; then
+  echo "Cloning OpenJarvis..."
+  git clone --depth 1 https://github.com/open-jarvis/OpenJarvis.git openjarvis
+else
+  echo "OpenJarvis already present, skipping clone."
+fi
 
 # Apply anthropic SDK compatibility patch
 echo "Applying cloud.py patch..."
