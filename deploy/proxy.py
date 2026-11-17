@@ -63,7 +63,6 @@ async def proxy(path: str, request: Request):
             params=dict(request.query_params),
             follow_redirects=False,
         )
-    # Strip hop-by-hop headers that can't be forwarded
     skip = {"transfer-encoding", "connection", "keep-alive", "te", "trailers", "upgrade"}
     out_headers = {k: v for k, v in resp.headers.items() if k.lower() not in skip}
     return Response(content=resp.content, status_code=resp.status_code, headers=out_headers)
