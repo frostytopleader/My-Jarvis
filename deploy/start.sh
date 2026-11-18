@@ -31,7 +31,23 @@ uv run --project openjarvis python deploy/tools_server.py &
 echo "Starting intel server on port 8004..."
 uv run --project openjarvis python deploy/intel_server.py &
 
-sleep 3
+# Wait for each MCP server to be healthy before OpenJarvis connects
+echo "Waiting for MCP servers to be ready..."
+for port in 8002 8003 8004; do
+    for i in $(seq 1 30); do
+        if curl -sf "http://127.0.0.1:${port}/" \
+               -H "Content-Type: application/json" \
+               -d '{"jsonrpc":"2.0","method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"healthcheck","version":"0.0.1"}},"id":0}' \
+               >/dev/null 2>&1; then
+            echo "  Port ${port} ready."
+            break
+        fi
+        sleep 1
+        if [ "$i" -eq 30 ]; then
+            echo "  WARNING: port ${port} did not respond after 30s — continuing anyway."
+        fi
+    done
+done
 
 # Start OpenJarvis on internal port 8001
 echo "Starting OpenJarvis on internal port 8001..."

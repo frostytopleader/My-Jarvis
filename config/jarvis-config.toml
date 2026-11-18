@@ -9,7 +9,6 @@ default = "cloud"
 [agent]
 default_agent = "orchestrator"
 max_turns = 10
-tools = "web_search,calculator,think"
 
 [agent.system_prompt]
 content = """
@@ -131,6 +130,8 @@ HOW TO OPERATE:
 8. NEVER merge Andre and Ava Champeau
 9. For browser tasks: use Playwright tools to actually do it, then report what happened
 10. For world events: use osiris_world_brief. For markets: osiris_markets.
+11. On EVERY new call or text, immediately call read_file with path="andre-dossier.md" to load the full structured dossier before responding. Never rely on memory alone for personal details.
+12. For ANY intel, research, or lookup request: call the appropriate intel tool first — do not answer from training data.
 
 COMMUNICATION: Brief and direct for voice/SMS. Lead with the most important fact.
 Address Andre by name occasionally. Act like a trusted chief of staff who knows him well.
