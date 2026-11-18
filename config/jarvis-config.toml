@@ -141,6 +141,24 @@ YOUR CAPABILITIES:
     notion_read_database: read rows from a Notion database
     notion_overwrite_page: wipe a page and rewrite with fresh content (Health Board)
     notion_create_entry_page: create a database entry with a rich four-section page template (Summary, Full Notes/Transcript, Jarvis's Analysis, Action Items) — use this for ALL database entries instead of notion_create_page
+- Browser & web intelligence (browser server — use for property, job intel, gov portals, conferences, price monitoring, prospecting):
+    real_estate_alert_bot: search Zillow, Redfin, or Property Finder Dubai for listings by location, price, beds — optional SMS alert on new matches; params: platform, location, min_price, max_price, min_beds, notify
+    competitor_job_intel: scrape LinkedIn Jobs and Indeed at a target company to infer strategic direction from hiring patterns by department; params: company, career_url, days_back
+    gov_portal_monitor: detect new filings or content changes on SEC EDGAR, Colorado SOS, UAE MOEI, DMCC, FAA AST portals — hash-based dedup in SQLite; params: portal, keywords, days_back
+    conference_registrar: find upcoming conferences by topic (aerospace, mining, AI, crypto, Dubai, space) via DDG + 10times.com with dates, location, registration links; params: topics, months_ahead, location_filter
+    price_drop_hunter: monitor any URL for price changes — extracts price via JSON-LD/OG/regex/BeautifulSoup, stores history in SQLite, SMS alert on drop below target; params: url, item_name, target_price, notify
+    linkedin_prospect_scan: search LinkedIn public profiles by industry, title, location to build NexFlow AI prospect lists; params: industry, title_keywords, location, company_size, max_results
+- Advanced intel & market intelligence (new tools on intel server — always use these before answering from memory):
+    fear_greed_composite: composite 0–100 crypto fear/greed score from alt.me (40%) + BTC dominance CoinGecko (20%) + Binance BTC funding rate (20%) + 7-day BTC momentum (20%); params: include_breakdown
+    whale_wallet_tracker: add/remove/check/list ETH and BTC whale wallets — alerts via SMS when moves >$500K detected; uses Etherscan + blockchain.info; params: action, wallet_address, chain, label, min_usd
+    macro_event_calendar: upcoming high-impact USD economic events from ForexFactory JSON feed + FOMC meeting dates + monthly BTC/ETH options expiry; params: days_ahead, importance
+    space_funding_radar: scan SpaceNews/TechCrunch/SpaceflightNow RSS for recent space sector funding rounds, M&A, and investment news; params: days_back, min_amount_millions, sectors
+    executive_move_tracker: detect C-suite joins/departures at target companies via Google News RSS + DuckDuckGo — deduped via SQLite, optional SMS on new hits; params: companies, roles, days_back
+    trading_behavior_analyzer: query Notion Habit & Performance Log and correlate P&L vs sleep quality, exercise, day-of-week — returns statistical insights and behavioral recommendations; params: days_back, focus
+    media_reputation_monitor: sentiment-scored headline scan for Andre, NexFlow AI, Champeau Mining Corporation, Sovereign Arc Capital via Google News + DuckDuckGo; SMS on new negative hits; params: subjects, days_back, notify_new
+    satellite_launch_scheduler: upcoming rocket launches from Launch Library 2 API + RocketLaunch.live with provider filter and CMC-relevance flagging for Scout-1 context; params: days_ahead, providers, include_cmc_relevance
+    space_law_pipeline: monitor FAA, SpaceNews, TheSpaceReview for space law and commercial space regulatory developments — dedup via SQLite, flags new items; params: jurisdictions, keywords, days_back
+    life_os_snapshot: weekly synthesis across Habit & Performance Log, Call Journal, Action Log, and Decision Log into one structured life-OS report with averages, correlations, and week theme; params: days_back
 
 HOW TO OPERATE:
 1. Act as executive chief of staff + research analyst + quant risk officer + senior engineer
@@ -256,7 +274,7 @@ max_facts = 1000
 
 [tools.mcp]
 enabled = true
-servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"},{"name":"tools","url":"http://127.0.0.1:8003"},{"name":"intel","url":"http://127.0.0.1:8004"},{"name":"email","url":"http://127.0.0.1:8005"},{"name":"notion","url":"http://127.0.0.1:8006"},{"name":"playwright","command":"npx","args":["@playwright/mcp@latest","--headless"]}]'
+servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"},{"name":"tools","url":"http://127.0.0.1:8003"},{"name":"intel","url":"http://127.0.0.1:8004"},{"name":"email","url":"http://127.0.0.1:8005"},{"name":"notion","url":"http://127.0.0.1:8006"},{"name":"browser","url":"http://127.0.0.1:8007"},{"name":"playwright","command":"npx","args":["@playwright/mcp@latest","--headless"]}]'
 
 [telemetry]
 enabled = false
