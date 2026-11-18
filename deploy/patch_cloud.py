@@ -7,10 +7,7 @@ with open(path) as f:
     content = f.read()
 
 old = '            create_kwargs["extra_body"] = {"temperature": temperature}'
-new = (
-    '            if not model.startswith(_ANTHROPIC_FIXED_SAMPLING_PREFIXES):\n'
-    '                create_kwargs["temperature"] = temperature'
-)
+new = ''  # Anthropic SDK rejects temperature both as extra_body and as a direct kwarg
 
 count = content.count(old)
 if count == 0:
