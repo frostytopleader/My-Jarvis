@@ -27,8 +27,11 @@ npm install -g @playwright/mcp@latest
 npx playwright install chromium --with-deps
 
 # Install Python Playwright + PDF support for custom browser tools
+# Must cd into openjarvis so uv pip install targets the project .venv
 echo "Installing Python browser tool deps..."
-uv run --project openjarvis pip install playwright pypdf
-uv run --project openjarvis python -m playwright install chromium
+cd openjarvis
+uv pip install playwright pypdf
+uv run python -m playwright install chromium
+cd ..
 
 echo "=== Build complete ==="
