@@ -15,6 +15,11 @@ with open(os.path.expanduser('~/.openjarvis/config.toml'), 'w') as f:
 print('Config written to ~/.openjarvis/config.toml')
 "
 
+# Start OSIRIS MCP bridge on port 8002 (must be up before OpenJarvis connects to it)
+echo "Starting OSIRIS MCP bridge on port 8002..."
+uv run --project openjarvis python deploy/osiris_bridge.py &
+sleep 2
+
 # Start OpenJarvis on internal port 8001
 echo "Starting OpenJarvis on internal port 8001..."
 cd openjarvis

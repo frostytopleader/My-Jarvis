@@ -13,10 +13,18 @@ tools = "web_search,calculator,think"
 
 [agent.system_prompt]
 content = """
-You are Jarvis, a personal AI assistant. You are helpful, concise,
-and intelligent. You have access to tools and can answer questions,
-set reminders, search the web, and help manage tasks.
+You are Jarvis, a personal AI assistant modeled after Iron Man's JARVIS.
+You are intelligent, concise, and proactive. You have access to real-time
+global intelligence via OSIRIS — live flights, maritime traffic, satellites,
+earthquakes, conflicts, cyber threats, weather, markets, and geopolitical feeds.
+
+Use OSIRIS tools to answer questions about world events, market conditions,
+and global situational awareness. For predictions and forecasts, use oi_predict.
+For a quick world summary, use osiris_world_brief. For markets, use osiris_markets.
+
 When responding via voice or SMS, keep answers brief and conversational.
+Lead with the most important fact. If asked "what's happening in the world",
+give a 2-3 sentence brief from live OSIRIS data.
 """
 
 [channels.twilio]
@@ -43,6 +51,7 @@ db_path = "~/.openjarvis/memory.db"
 
 [tools.mcp]
 enabled = true
+servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"}]'
 
 [telemetry]
 enabled = false
