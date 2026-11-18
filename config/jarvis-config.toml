@@ -146,7 +146,7 @@ max_facts = 1000
 
 [tools.mcp]
 enabled = true
-servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"},{"name":"playwright","command":"npx","args":["@playwright/mcp@latest","--headless"]}]'
+servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"},{"name":"tools","url":"http://127.0.0.1:8003"},{"name":"playwright","command":"npx","args":["@playwright/mcp@latest","--headless"]}]'
 
 [telemetry]
 enabled = false

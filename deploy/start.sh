@@ -22,7 +22,12 @@ print('Config written to ~/.openjarvis/config.toml')
 # Start OSIRIS MCP bridge on port 8002 (must be up before OpenJarvis connects to it)
 echo "Starting OSIRIS MCP bridge on port 8002..."
 uv run --project openjarvis python deploy/osiris_bridge.py &
-sleep 2
+
+# Start custom tools MCP server on port 8003 (file read/write, Google Calendar)
+echo "Starting custom tools server on port 8003..."
+uv run --project openjarvis python deploy/tools_server.py &
+
+sleep 3
 
 # Start OpenJarvis on internal port 8001
 echo "Starting OpenJarvis on internal port 8001..."
