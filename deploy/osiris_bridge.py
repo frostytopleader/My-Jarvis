@@ -23,9 +23,11 @@ async def bridge(request: Request):
         "Accept": "application/json, text/event-stream",
     }
     if ANTHROPIC_API_KEY:
+        # HTTP headers must be ASCII — strip any non-ASCII that crept in
+        clean_key = ANTHROPIC_API_KEY.encode("ascii", "ignore").decode("ascii")
         headers.update({
             "X-OI-Provider": "anthropic",
-            "X-OI-Key": ANTHROPIC_API_KEY,
+            "X-OI-Key": clean_key,
             "X-OI-Model": "claude-haiku-4-5-20251001",
         })
     mcp_session = request.headers.get("mcp-session-id")
