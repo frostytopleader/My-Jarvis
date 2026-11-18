@@ -1,9 +1,10 @@
 """
 Jarvis proxy server.
 - Handles POST /call/me  → triggers ElevenLabs outbound call to Andre
+- GET /debug            → shows MCP server health + tool counts
 - Proxies everything else → OpenJarvis on localhost:8001
 """
-import os, asyncio
+import os, asyncio, json
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request, Response
@@ -16,6 +17,53 @@ ELEVENLABS_PHONE_NUMBER_ID = "phnum_2401kt2rxp7zfan955wkcx3zj56f"
 DEFAULT_TO_NUMBER = "+13032699875"
 
 app = FastAPI()
+
+MCP_SERVERS = {
+    "osiris":    "http://127.0.0.1:8002",
+    "tools":     "http://127.0.0.1:8003",
+    "intel":     "http://127.0.0.1:8004",
+}
+
+INIT_PAYLOAD = json.dumps({
+    "jsonrpc": "2.0", "method": "initialize",
+    "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                "clientInfo": {"name": "debug", "version": "0.0.1"}},
+    "id": 1,
+})
+
+LIST_PAYLOAD = json.dumps({"jsonrpc": "2.0", "method": "tools/list", "params": {}, "id": 2})
+
+
+@app.get("/debug")
+async def debug():
+    """Check MCP servers are reachable and report tool counts."""
+    results = {}
+    async with httpx.AsyncClient(timeout=5) as client:
+        for name, url in MCP_SERVERS.items():
+            try:
+                r = await client.post(url, content=INIT_PAYLOAD,
+                                      headers={"Content-Type": "application/json"})
+                if r.status_code != 200:
+                    results[name] = {"status": "error", "http": r.status_code}
+                    continue
+                r2 = await client.post(url, content=LIST_PAYLOAD,
+                                       headers={"Content-Type": "application/json"})
+                tools = r2.json().get("result", {}).get("tools", [])
+                results[name] = {"status": "ok", "tools": len(tools),
+                                 "names": [t["name"] for t in tools]}
+            except Exception as exc:
+                results[name] = {"status": "unreachable", "error": str(exc)}
+
+    # Also ping OpenJarvis
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            oj = await client.get("http://127.0.0.1:8001/health")
+            results["openjarvis"] = {"status": "ok", "http": oj.status_code}
+    except Exception as exc:
+        results["openjarvis"] = {"status": "unreachable", "error": str(exc)}
+
+    all_ok = all(v.get("status") == "ok" for v in results.values())
+    return JSONResponse({"healthy": all_ok, "servers": results})
 
 
 @app.post("/call/me")
