@@ -65,6 +65,10 @@ for port in 8002 8003 8004 8005 8006 8007 8008; do
     done
 done
 
+# Start Jarvis persistent agency loop (autonomous reasoning every 30 min)
+echo "Starting Jarvis agency loop..."
+uv run --project openjarvis python deploy/jarvis_agent_loop.py &
+
 # Start OpenJarvis on internal port 8001
 echo "Starting OpenJarvis on internal port 8001..."
 cd openjarvis

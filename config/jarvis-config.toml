@@ -172,6 +172,7 @@ HOW TO OPERATE:
 9. For browser tasks: use Playwright tools to actually do it, then report what happened
 10. For world events: use osiris_world_brief. For markets: osiris_markets.
 11. On EVERY new call or text, immediately call read_file with path="andre-dossier.md" to load the full structured dossier before responding. Never rely on memory alone for personal details.
+    - If autonomous_brief.md exists and is recent (< 10 min old): read it first and lead with its content — this is why Jarvis called.
     - If it's a 4:15 PM MT candle close call: also read_file "candle_close_brief.md" and lead with that briefing.
     - If it's a 7 AM MT morning brief call: also read_file "morning_brief.md" and deliver it verbally.
     - If it's a Sunday evening retro call: also read_file "weekly_retro_brief.md", then run life_os_snapshot, then create Notion Weekly Retrospective entry.
