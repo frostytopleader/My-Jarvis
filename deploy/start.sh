@@ -5,6 +5,10 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # Write config from template, substituting env vars for secrets
 mkdir -p "$HOME/.openjarvis"
+
+# Copy Andre's dossier to persistent volume so Jarvis can reference it
+cp config/andre-dossier.md "$HOME/.openjarvis/andre-dossier.md"
+echo "Dossier copied to ~/.openjarvis/andre-dossier.md"
 python3 -c "
 import os, re
 with open('config/jarvis-config.toml') as f:
