@@ -72,6 +72,11 @@ TWILIO_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN", "")
 TWILIO_FROM   = os.environ.get("TWILIO_PHONE_NUMBER", "")
 TWILIO_TO     = os.environ.get("JARVIS_NOTIFY_NUMBER", "+13032699875")
 
+# ── ElevenLabs (for outbound calling) ─────────────────────────────────────────
+ELEVENLABS_API_KEY  = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_AGENT_ID = "agent_2801m7nv7wmzf9xt3rvk856w2536"
+ELEVENLABS_PHONE_ID = "phnum_2401kt2rxp7zfan955wkcx3zj56f"
+
 # How often the background watcher polls (default 10 min; override with env var)
 MONITOR_INTERVAL = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "600"))
 
