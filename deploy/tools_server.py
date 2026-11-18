@@ -1003,6 +1003,275 @@ def tool_list_watches() -> str:
     return "\n".join(lines)
 
 
+def tool_weather(location: str) -> str:
+    """Current weather + 3-day forecast via Open-Meteo (free, no key)."""
+    try:
+        geo_url = f"https://nominatim.openstreetmap.org/search?q={urllib.parse.quote_plus(location)}&format=json&limit=1"
+        req = urllib.request.Request(geo_url, headers={"User-Agent": "Jarvis/1.0"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            geo = json.loads(r.read())
+        if not geo:
+            return f"Location not found: {location}"
+        lat, lon = geo[0]["lat"], geo[0]["lon"]
+        display = geo[0].get("display_name", location).split(",")[0]
+        wx_url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}"
+            f"&current=temperature_2m,apparent_temperature,precipitation,wind_speed_10m,weathercode"
+            f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode"
+            f"&temperature_unit=fahrenheit&wind_speed_unit=mph&forecast_days=4&timezone=auto"
+        )
+        with urllib.request.urlopen(wx_url, timeout=10) as r:
+            wx = json.loads(r.read())
+        WMO = {
+            0:"Clear sky",1:"Mostly clear",2:"Partly cloudy",3:"Overcast",
+            45:"Fog",48:"Icy fog",51:"Light drizzle",53:"Drizzle",55:"Heavy drizzle",
+            61:"Light rain",63:"Rain",65:"Heavy rain",71:"Light snow",73:"Snow",75:"Heavy snow",
+            80:"Showers",81:"Showers",82:"Heavy showers",95:"Thunderstorm",99:"Hail storm",
+        }
+        code = lambda c: WMO.get(int(c), f"Code {c}")
+        cur = wx["current"]
+        daily = wx["daily"]
+        lines = [
+            f"Weather — {display}",
+            f"Now: {cur['temperature_2m']}°F (feels {cur['apparent_temperature']}°F) · {code(cur['weathercode'])}",
+            f"Wind: {cur['wind_speed_10m']} mph · Precip: {cur['precipitation']} mm",
+            "",
+            "Forecast:",
+        ]
+        for i in range(4):
+            lines.append(
+                f"  {daily['time'][i]}: {code(daily['weathercode'][i])} · "
+                f"High {daily['temperature_2m_max'][i]}°F / Low {daily['temperature_2m_min'][i]}°F · "
+                f"Precip {daily['precipitation_sum'][i]} mm"
+            )
+        return "\n".join(lines)
+    except Exception:
+        return f"Weather error:\n{traceback.format_exc()}"
+
+
+def tool_stock_fundamentals(symbol: str) -> str:
+    """P/E, EPS, revenue, margins, analyst price targets for any stock."""
+    try:
+        sym = symbol.upper().strip()
+        url = (
+            f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{sym}"
+            f"?modules=summaryDetail,financialData,defaultKeyStatistics"
+        )
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read())
+        result = data["quoteSummary"]["result"][0]
+        sd = result.get("summaryDetail", {})
+        fd = result.get("financialData", {})
+        ks = result.get("defaultKeyStatistics", {})
+
+        def v(d, key):
+            obj = d.get(key, {})
+            if isinstance(obj, dict):
+                return obj.get("fmt", obj.get("raw", "N/A"))
+            return obj if obj is not None else "N/A"
+
+        lines = [
+            f"=== {sym} Fundamentals ===",
+            f"Market Cap:         {v(sd,'marketCap')}",
+            f"P/E (trailing):     {v(sd,'trailingPE')}",
+            f"P/E (forward):      {v(sd,'forwardPE')}",
+            f"EPS (trailing):     {v(ks,'trailingEps')}",
+            f"EPS (forward):      {v(ks,'forwardEps')}",
+            f"Revenue (TTM):      {v(fd,'totalRevenue')}",
+            f"Gross Margin:       {v(fd,'grossMargins')}",
+            f"Operating Margin:   {v(fd,'operatingMargins')}",
+            f"Net Margin:         {v(fd,'profitMargins')}",
+            f"Return on Equity:   {v(fd,'returnOnEquity')}",
+            f"Debt/Equity:        {v(ks,'debtToEquity')}",
+            f"Free Cash Flow:     {v(fd,'freeCashflow')}",
+            f"Beta:               {v(sd,'beta')}",
+            f"",
+            f"Analyst Targets ({v(fd,'numberOfAnalystOpinions')} analysts):",
+            f"  Current Price:    {v(fd,'currentPrice')}",
+            f"  Target Low:       {v(fd,'targetLowPrice')}",
+            f"  Target Mean:      {v(fd,'targetMeanPrice')}",
+            f"  Target High:      {v(fd,'targetHighPrice')}",
+            f"  Recommendation:   {str(v(fd,'recommendationKey')).upper()}",
+        ]
+        return "\n".join(lines)
+    except Exception:
+        return f"Fundamentals error:\n{traceback.format_exc()}"
+
+
+def tool_send_sms(to: str = "", message: str = "") -> str:
+    """Send a custom SMS to any number via Twilio. Defaults to Andre's number."""
+    if not TWILIO_SID or not TWILIO_TOKEN or not TWILIO_FROM:
+        return "ERROR: Twilio credentials not configured (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER)."
+    dest = to.strip() or TWILIO_TO
+    _send_sms(dest, message)
+    return f"SMS sent to {dest}."
+
+
+def tool_initiate_call(to: str = "") -> str:
+    """Trigger Jarvis to call a phone number via ElevenLabs outbound calling."""
+    if not ELEVENLABS_API_KEY:
+        return "ERROR: ELEVENLABS_API_KEY not set."
+    dest = to.strip() or TWILIO_TO
+    payload = json.dumps({
+        "agent_id": ELEVENLABS_AGENT_ID,
+        "agent_phone_number_id": ELEVENLABS_PHONE_ID,
+        "to_number": dest,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.elevenlabs.io/v1/convai/twilio/outbound_call",
+        data=payload,
+        headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        resp = json.loads(r.read())
+    return f"Call initiated to {dest}: {resp}"
+
+
+def _ensure_scheduler_schema(db):
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS schedules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            label TEXT UNIQUE NOT NULL,
+            cron_expr TEXT NOT NULL,
+            action TEXT NOT NULL,
+            params TEXT DEFAULT '{}',
+            enabled INTEGER DEFAULT 1,
+            last_run TEXT,
+            created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now'))
+        )
+    """)
+    db.commit()
+
+
+def _fire_schedule(action: str, params: dict, label: str):
+    """Execute a scheduled task action."""
+    to = params.get("to", TWILIO_TO)
+    try:
+        if action == "sms":
+            msg = params.get("message", f"Jarvis scheduled: {label}")
+            _send_sms(to, msg)
+        elif action == "call":
+            tool_initiate_call(to)
+        elif action == "news_briefing":
+            briefing = tool_market_news(params.get("query", "crypto markets macro"), max_items=5)
+            _send_sms(to, f"[{label}]\n{briefing[:1500]}")
+        elif action == "weather":
+            loc = params.get("location", "Boulder, CO")
+            wx = tool_weather(loc)
+            _send_sms(to, f"[Weather — {loc}]\n{wx[:800]}")
+        elif action == "market_brief":
+            brief = tool_market_news("bitcoin crypto markets macro", max_items=5)
+            prices = tool_crypto_price("BTC,ETH,SOL")
+            _send_sms(to, f"[Markets]\n{prices}\n\n{brief[:800]}")
+        else:
+            import logging as _log
+            _log.getLogger("tools_server").warning(f"Unknown schedule action: {action}")
+    except Exception as e:
+        import logging as _log
+        _log.getLogger("tools_server").error(f"_fire_schedule({action}) error: {e}")
+
+
+def _scheduler_loop():
+    """Check scheduled tasks every 60 seconds and fire ones whose cron matches."""
+    import sqlite3 as _sqlite3
+    from datetime import datetime as _dt
+    try:
+        from croniter import croniter as _croniter
+        HAS_CRONITER = True
+    except ImportError:
+        HAS_CRONITER = False
+        import logging as _log
+        _log.getLogger("tools_server").warning("croniter not available — scheduled tasks disabled")
+
+    while True:
+        try:
+            if HAS_CRONITER:
+                db_path = str(JARVIS_DIR / "monitor.db")
+                db = _sqlite3.connect(db_path)
+                _ensure_scheduler_schema(db)
+                now = _dt.now()
+                rows = db.execute(
+                    "SELECT id, label, cron_expr, action, params, last_run FROM schedules WHERE enabled=1"
+                ).fetchall()
+                for id_, label, cron_expr, action, params_str, last_run in rows:
+                    try:
+                        ci = _croniter(cron_expr, now)
+                        prev = ci.get_prev(_dt)
+                        already_ran = last_run and last_run[:16] == now.strftime("%Y-%m-%dT%H:%M")
+                        if (now - prev).total_seconds() < 65 and not already_ran:
+                            params = json.loads(params_str or "{}")
+                            _fire_schedule(action, params, label)
+                            db.execute("UPDATE schedules SET last_run=? WHERE id=?",
+                                       (now.strftime("%Y-%m-%dT%H:%M:%S"), id_))
+                            db.commit()
+                    except Exception as e:
+                        import logging as _log
+                        _log.getLogger("tools_server").error(f"Schedule '{label}' error: {e}")
+                db.close()
+        except Exception as e:
+            import logging as _log
+            _log.getLogger("tools_server").error(f"Scheduler loop error: {e}")
+        time.sleep(60)
+
+
+def tool_schedule_task(label: str, cron_expr: str, action: str, params: dict = None) -> str:
+    """Create a persistent scheduled task backed by SQLite. Runs even when not talking."""
+    db_path = str(JARVIS_DIR / "monitor.db")
+    db = sqlite3.connect(db_path)
+    _ensure_scheduler_schema(db)
+    params = params or {}
+    db.execute("""
+        INSERT INTO schedules (label, cron_expr, action, params)
+        VALUES (?,?,?,?)
+        ON CONFLICT(label) DO UPDATE SET
+            cron_expr=excluded.cron_expr,
+            action=excluded.action,
+            params=excluded.params,
+            enabled=1
+    """, (label, cron_expr, action, json.dumps(params)))
+    db.commit()
+    db.close()
+    return f"Scheduled '{label}': {action} @ cron '{cron_expr}'"
+
+
+def tool_list_schedules() -> str:
+    """List all scheduled tasks (active and paused)."""
+    db_path = str(JARVIS_DIR / "monitor.db")
+    if not Path(db_path).exists():
+        return "No schedules configured."
+    db = sqlite3.connect(db_path)
+    _ensure_scheduler_schema(db)
+    rows = db.execute(
+        "SELECT label, cron_expr, action, params, enabled, last_run FROM schedules ORDER BY label"
+    ).fetchall()
+    db.close()
+    if not rows:
+        return "No scheduled tasks."
+    lines = ["Scheduled Tasks:"]
+    for label, cron_expr, action, params, enabled, last_run in rows:
+        status = "active" if enabled else "paused"
+        lines.append(f"  {label}: {action} @ '{cron_expr}' [{status}] last_run={last_run or 'never'}")
+        if params and params != '{}':
+            lines.append(f"    params: {params}")
+    return "\n".join(lines)
+
+
+def tool_cancel_schedule(label: str) -> str:
+    """Remove a scheduled task by label."""
+    db_path = str(JARVIS_DIR / "monitor.db")
+    if not Path(db_path).exists():
+        return "No schedules configured."
+    db = sqlite3.connect(db_path)
+    db.execute("DELETE FROM schedules WHERE label=?", (label,))
+    n = db.execute("SELECT changes()").fetchone()[0]
+    db.commit()
+    db.close()
+    return f"Cancelled '{label}'." if n else f"No schedule named '{label}'."
+
+
 def tool_pdf_extractor(url: str, max_pages: int = 15) -> str:
     """Download a PDF from a URL and extract its text content."""
     if not PYPDF_OK:
@@ -1348,6 +1617,87 @@ TOOLS = [
             "required": [],
         },
     },
+    # ── New tools: weather, fundamentals, outreach, scheduler ────────────────
+    {
+        "name": "weather",
+        "description": "Current weather and 3-day forecast for any location. Free, no API key needed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "location": {"type": "string", "description": "City name, address, or lat,lon"}
+            },
+            "required": ["location"],
+        },
+    },
+    {
+        "name": "stock_fundamentals",
+        "description": "P/E ratio, EPS, revenue, margins, return on equity, debt/equity, free cash flow, and analyst price targets for any stock ticker.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "symbol": {"type": "string", "description": "Stock ticker symbol, e.g. AAPL, TSLA, NVDA"}
+            },
+            "required": ["symbol"],
+        },
+    },
+    {
+        "name": "send_sms",
+        "description": "Send an SMS message via Twilio to any number. Defaults to Andre's number if no 'to' given.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to":      {"type": "string", "description": "E.164 phone number, e.g. +13031234567. Leave blank for Andre."},
+                "message": {"type": "string", "description": "Text message content"},
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "initiate_call",
+        "description": "Trigger Jarvis to call a phone number via ElevenLabs outbound calling. Defaults to Andre's number.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "description": "E.164 phone number. Leave blank for Andre."}
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "schedule_task",
+        "description": (
+            "Create a persistent scheduled task. Jarvis fires it automatically on the cron schedule. "
+            "Actions: 'sms' (send message), 'call' (call Andre), 'news_briefing' (news + prices via SMS), "
+            "'weather' (weather SMS), 'market_brief' (market summary SMS). "
+            "Cron is UTC — MST is UTC-7, so 7am MST = '0 14 * * *'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label":     {"type": "string", "description": "Unique name for this schedule, e.g. 'morning_brief'"},
+                "cron_expr": {"type": "string", "description": "5-field cron expression in UTC, e.g. '0 14 * * *' for daily 7am MST"},
+                "action":    {"type": "string", "enum": ["sms", "call", "news_briefing", "weather", "market_brief"]},
+                "params":    {"type": "object", "description": "Action params: for sms: {message}, for weather: {location}, for all: {to} overrides default number"},
+            },
+            "required": ["label", "cron_expr", "action"],
+        },
+    },
+    {
+        "name": "list_schedules",
+        "description": "List all scheduled tasks — active and paused — with their last run time.",
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "cancel_schedule",
+        "description": "Remove a scheduled task by label.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string", "description": "Label of the schedule to cancel"}
+            },
+            "required": ["label"],
+        },
+    },
 ]
 
 TOOL_FNS = {
@@ -1371,6 +1721,14 @@ TOOL_FNS = {
     "portfolio_snapshot":     lambda a: tool_portfolio_snapshot(),
     "risk_dashboard":         lambda a: tool_risk_dashboard(),
     "strategy_perf":          lambda a: tool_strategy_perf(**a),
+    # New tools
+    "weather":                lambda a: tool_weather(**a),
+    "stock_fundamentals":     lambda a: tool_stock_fundamentals(**a),
+    "send_sms":               lambda a: tool_send_sms(**a),
+    "initiate_call":          lambda a: tool_initiate_call(**a),
+    "schedule_task":          lambda a: tool_schedule_task(**a),
+    "list_schedules":         lambda a: tool_list_schedules(),
+    "cancel_schedule":        lambda a: tool_cancel_schedule(**a),
 }
 
 SESSION_ID = "jarvis-tools-1"
@@ -1381,6 +1739,8 @@ SESSION_ID = "jarvis-tools-1"
 async def lifespan(app: FastAPI):
     t = threading.Thread(target=_monitor_loop, daemon=True)
     t.start()
+    s = threading.Thread(target=_scheduler_loop, daemon=True)
+    s.start()
     yield
 
 

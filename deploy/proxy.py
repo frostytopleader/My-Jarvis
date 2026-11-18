@@ -22,6 +22,8 @@ MCP_SERVERS = {
     "osiris":    "http://127.0.0.1:8002",
     "tools":     "http://127.0.0.1:8003",
     "intel":     "http://127.0.0.1:8004",
+    "email":     "http://127.0.0.1:8005",
+    "notion":    "http://127.0.0.1:8006",
 }
 
 INIT_PAYLOAD = json.dumps({
