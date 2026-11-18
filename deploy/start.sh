@@ -39,13 +39,17 @@ uv run --project openjarvis python deploy/email_server.py &
 echo "Starting Notion server on port 8006..."
 uv run --project openjarvis python deploy/notion_server.py &
 
-# Start browser server on port 8007 (real estate, job intel, gov portals, price alerts)
+# Start browser server on port 8007 (real estate, job intel, gov portals, price alerts, LinkedIn)
 echo "Starting browser server on port 8007..."
 uv run --project openjarvis python deploy/browser_server.py &
 
+# Start intel2 server on port 8008 (fear/greed, whale wallets, macro, space funding, exec moves, etc.)
+echo "Starting intel2 server on port 8008..."
+uv run --project openjarvis python deploy/intel2_server.py &
+
 # Wait for each MCP server to be healthy before OpenJarvis connects
 echo "Waiting for MCP servers to be ready..."
-for port in 8002 8003 8004 8005 8006 8007; do
+for port in 8002 8003 8004 8005 8006 8007 8008; do
     for i in $(seq 1 30); do
         if curl -sf "http://127.0.0.1:${port}/" \
                -H "Content-Type: application/json" \
