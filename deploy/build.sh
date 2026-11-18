@@ -20,4 +20,10 @@ python3 ../deploy/patch_cloud.py
 echo "Installing dependencies..."
 uv sync --extra server --extra inference-cloud --no-dev
 
+# Install Playwright MCP and browsers for agentic web actions
+echo "Installing Playwright MCP..."
+cd ..
+npm install -g @playwright/mcp@latest
+npx playwright install chromium --with-deps
+
 echo "=== Build complete ==="

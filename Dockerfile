@@ -2,9 +2,9 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System deps: git for cloning, curl for uv installer
+# System deps: git, curl, Node.js (for Playwright MCP via npx)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git curl ca-certificates \
+    git curl ca-certificates nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv
