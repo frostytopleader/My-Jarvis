@@ -1146,8 +1146,30 @@ def _ensure_scheduler_schema(db):
     db.commit()
 
 
+def _call_mcp_tool(port: int, tool_name: str, args: dict) -> str:
+    """Call a tool on a local MCP server via JSON-RPC."""
+    payload = json.dumps({
+        "jsonrpc": "2.0", "id": 1,
+        "method": "tools/call",
+        "params": {"name": tool_name, "arguments": args}
+    }).encode()
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{port}/",
+        data=payload,
+        headers={"Content-Type": "application/json"}
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read())
+            content = data.get("result", {}).get("content", [])
+            return content[0].get("text", "") if content else str(data)
+    except Exception as e:
+        return f"[mcp_call failed: {e}]"
+
+
 def _fire_schedule(action: str, params: dict, label: str):
     """Execute a scheduled task action."""
+    import re as _re
     to = params.get("to", TWILIO_TO)
     try:
         if action == "sms":
@@ -1166,6 +1188,73 @@ def _fire_schedule(action: str, params: dict, label: str):
             brief = tool_market_news("bitcoin crypto markets macro", max_items=5)
             prices = tool_crypto_price("BTC,ETH,SOL")
             _send_sms(to, f"[Markets]\n{prices}\n\n{brief[:800]}")
+        elif action == "candle_close_call":
+            # Daily 4:15 PM MT candle close — get data, write brief, SMS, then call
+            prices  = tool_crypto_price("BTC,ETH")
+            fg      = _call_mcp_tool(8004, "fear_greed_composite", {"include_breakdown": True})
+            news    = tool_market_news("bitcoin crypto markets", max_items=3)
+            ts      = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+            brief   = (f"=== 4:15 CANDLE CLOSE BRIEF ===\n{ts}\n\n"
+                       f"PRICES:\n{prices}\n\n"
+                       f"FEAR/GREED:\n{fg[:300]}\n\n"
+                       f"MARKET NEWS:\n{news[:600]}")
+            notes_dir = JARVIS_DIR / "notes"
+            notes_dir.mkdir(exist_ok=True)
+            (notes_dir / "candle_close_brief.md").write_text(brief)
+            _send_sms(to, f"[4:15 Candle Close]\n{prices[:300]}")
+            time.sleep(4)
+            tool_initiate_call(to)
+        elif action == "morning_brief_call":
+            # 7 AM MT — market data SMS + proactive call
+            prices  = tool_crypto_price("BTC,ETH,SOL")
+            brief   = tool_market_news("bitcoin crypto markets macro", max_items=5)
+            weather = tool_weather("Boulder, CO")
+            msg     = f"[Good Morning — {datetime.now(timezone.utc).strftime('%a %b %d')}]\n{prices}\n\n{brief[:600]}\n\n{weather[:200]}"
+            notes_dir = JARVIS_DIR / "notes"
+            notes_dir.mkdir(exist_ok=True)
+            (notes_dir / "morning_brief.md").write_text(f"=== MORNING BRIEF ===\n{msg}")
+            _send_sms(to, msg[:1500])
+            time.sleep(5)
+            tool_initiate_call(to)
+        elif action == "autonomous_monitor":
+            # Hourly autonomous check — call/SMS only when market moves warrant it
+            prices_raw = tool_crypto_price("BTC")
+            fg_raw     = _call_mcp_tool(8004, "fear_greed_composite", {"include_breakdown": False})
+            pct_m      = _re.search(r'([+-]?\d+\.?\d*)%', prices_raw)
+            fg_m       = _re.search(r'\b(\d{1,3})\s*/\s*100', fg_raw)
+            pct_change = float(pct_m.group(1)) if pct_m else 0.0
+            fg_score   = int(fg_m.group(1)) if fg_m else 50
+            alert_reason = None
+            if abs(pct_change) >= 7:
+                alert_reason = f"🚨 BTC {pct_change:+.1f}% — major move"
+            elif abs(pct_change) >= 4:
+                alert_reason = f"📊 BTC {pct_change:+.1f}% — notable move"
+            elif fg_score <= 12:
+                alert_reason = f"😱 Extreme Fear ({fg_score}/100)"
+            elif fg_score >= 88:
+                alert_reason = f"🤑 Extreme Greed ({fg_score}/100)"
+            if alert_reason:
+                news = tool_market_news("bitcoin crypto markets", max_items=2)
+                _send_sms(to, f"[Jarvis Alert]\n{alert_reason}\n{prices_raw[:250]}\n{news[:400]}")
+                if abs(pct_change) >= 7 or fg_score <= 12 or fg_score >= 88:
+                    time.sleep(5)
+                    tool_initiate_call(to)
+        elif action == "weekly_retro":
+            # Sunday 7 PM MT — weekly retrospective call
+            prices = tool_crypto_price("BTC,ETH,SOL")
+            news   = tool_market_news("bitcoin markets weekly recap", max_items=5)
+            ts     = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            brief  = (f"=== WEEKLY RETROSPECTIVE — {ts} ===\n\n"
+                      f"MARKETS THIS WEEK:\n{prices}\n\n"
+                      f"TOP STORIES:\n{news[:800]}\n\n"
+                      f"On this call: run life_os_snapshot for the week analysis, "
+                      f"then create Weekly Retrospective entry in Notion.")
+            notes_dir = JARVIS_DIR / "notes"
+            notes_dir.mkdir(exist_ok=True)
+            (notes_dir / "weekly_retro_brief.md").write_text(brief)
+            _send_sms(to, f"[Sunday Retro] Weekly review ready. Calling now...")
+            time.sleep(4)
+            tool_initiate_call(to)
         else:
             import logging as _log
             _log.getLogger("tools_server").warning(f"Unknown schedule action: {action}")
@@ -1676,7 +1765,7 @@ TOOLS = [
             "properties": {
                 "label":     {"type": "string", "description": "Unique name for this schedule, e.g. 'morning_brief'"},
                 "cron_expr": {"type": "string", "description": "5-field cron expression in UTC, e.g. '0 14 * * *' for daily 7am MST"},
-                "action":    {"type": "string", "enum": ["sms", "call", "news_briefing", "weather", "market_brief"]},
+                "action":    {"type": "string", "enum": ["sms", "call", "news_briefing", "weather", "market_brief", "candle_close_call", "morning_brief_call", "autonomous_monitor", "weekly_retro"]},
                 "params":    {"type": "object", "description": "Action params: for sms: {message}, for weather: {location}, for all: {to} overrides default number"},
             },
             "required": ["label", "cron_expr", "action"],
@@ -1735,8 +1824,32 @@ SESSION_ID = "jarvis-tools-1"
 
 # ── MCP HTTP server ────────────────────────────────────────────────────────────
 
+def _seed_default_tasks():
+    """Ensure standing autonomous tasks exist in the scheduler DB at startup.
+    Uses INSERT OR IGNORE so user customisations are never overwritten."""
+    db_path = str(JARVIS_DIR / "monitor.db")
+    JARVIS_DIR.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(db_path)
+    _ensure_scheduler_schema(db)
+    defaults = [
+        # label                   cron (UTC)       action                 params
+        ("BTC 4:15 Candle Close", "15 23 * * *",  "candle_close_call",   {}),
+        ("Daily Morning Brief",   "0 14 * * *",   "morning_brief_call",  {}),
+        ("Autonomous Monitor",    "0 * * * *",    "autonomous_monitor",  {}),
+        ("Sunday Weekly Retro",   "0 2 * * 1",    "weekly_retro",        {}),
+    ]
+    for label, cron, action, p in defaults:
+        db.execute(
+            "INSERT OR IGNORE INTO schedules (label, cron_expr, action, params) VALUES (?,?,?,?)",
+            (label, cron, action, json.dumps(p))
+        )
+    db.commit()
+    db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _seed_default_tasks()
     t = threading.Thread(target=_monitor_loop, daemon=True)
     t.start()
     s = threading.Thread(target=_scheduler_loop, daemon=True)
