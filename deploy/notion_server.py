@@ -198,6 +198,32 @@ def tool_notion_read_database(database_id: str, filter_json: str = "") -> str:
         return f"Notion DB error:\n{traceback.format_exc()}"
 
 
+def tool_notion_overwrite_page(page_id: str, content: str) -> str:
+    """Clear all existing blocks on a page and replace with new content. Used to update the Health Board."""
+    if not NOTION_API_KEY:
+        return "ERROR: NOTION_API_KEY not set."
+    try:
+        pid      = _clean_id(page_id)
+        existing = _notion("GET", f"blocks/{pid}/children?page_size=100")
+        block_ids = [b["id"] for b in existing.get("results", [])]
+        for bid in block_ids:
+            try:
+                _notion("DELETE", f"blocks/{bid}")
+            except Exception:
+                pass
+        paragraphs = [p.strip() for p in content.split("\n\n") if p.strip()]
+        children   = [
+            {"object": "block", "type": "paragraph",
+             "paragraph": {"rich_text": _rich_text(p[:2000])}}
+            for p in paragraphs[:100]
+        ]
+        if children:
+            _notion("PATCH", f"blocks/{pid}/children", {"children": children})
+        return f"Health Board overwritten — {len(block_ids)} old blocks replaced with {len(children)} new blocks."
+    except Exception:
+        return f"notion_overwrite_page error:\n{traceback.format_exc()}"
+
+
 TOOLS = [
     {
         "name": "notion_search",
@@ -259,6 +285,18 @@ TOOLS = [
             "required": ["database_id"],
         },
     },
+    {
+        "name": "notion_overwrite_page",
+        "description": "Clear all existing content on a Notion page and replace with new content. Use this to update the Health Board with fresh status data.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "page_id": {"type": "string", "description": "Notion page ID or URL. For Health Board use: 41c072ec-4279-818f-8ad4-c15f88c6a50c"},
+                "content": {"type": "string", "description": "Full new page content as text with double-newline paragraph breaks"},
+            },
+            "required": ["page_id", "content"],
+        },
+    },
 ]
 
 TOOL_FNS = {
@@ -267,6 +305,7 @@ TOOL_FNS = {
     "notion_create_page":    lambda a: tool_notion_create_page(**a),
     "notion_append_to_page": lambda a: tool_notion_append_to_page(**a),
     "notion_read_database":  lambda a: tool_notion_read_database(**a),
+    "notion_overwrite_page": lambda a: tool_notion_overwrite_page(**a),
 }
 
 app = FastAPI()
