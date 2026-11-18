@@ -198,6 +198,57 @@ def tool_notion_read_database(database_id: str, filter_json: str = "") -> str:
         return f"Notion DB error:\n{traceback.format_exc()}"
 
 
+def tool_notion_create_entry_page(
+    parent_database_id: str,
+    title: str,
+    summary: str = "",
+    full_notes: str = "",
+    jarvis_analysis: str = "",
+    action_items: str = "",
+    extra_properties: str = "",
+) -> str:
+    """Create a database entry page with the standard 4-section template."""
+    if not NOTION_API_KEY:
+        return "ERROR: NOTION_API_KEY not set."
+    try:
+        did = _clean_id(parent_database_id)
+        properties: dict = {"title": {"title": _rich_text(title)}}
+        if extra_properties:
+            try:
+                properties.update(json.loads(extra_properties))
+            except Exception:
+                pass
+        result = _notion("POST", "pages", {
+            "parent": {"type": "database_id", "database_id": did},
+            "properties": properties,
+        })
+        page_id  = result["id"]
+        page_url = result.get("url", f"https://notion.so/{page_id.replace('-', '')}")
+
+        def _section(heading: str, body: str, placeholder: str) -> list:
+            blocks = [
+                {"object": "block", "type": "heading_1",
+                 "heading_1": {"rich_text": _rich_text(heading)}},
+            ]
+            text = body.strip() or placeholder
+            for chunk in [text[i:i+2000] for i in range(0, min(len(text), 10000), 2000)]:
+                blocks.append({"object": "block", "type": "paragraph",
+                                "paragraph": {"rich_text": _rich_text(chunk)}})
+            blocks.append({"object": "block", "type": "divider", "divider": {}})
+            return blocks
+
+        children = (
+            _section("📋 Summary", summary, "Summary not yet written.") +
+            _section("📝 Full Notes / Transcript", full_notes, "Full notes not yet written.") +
+            _section("🤖 Jarvis's Analysis", jarvis_analysis, "Analysis not yet written.") +
+            _section("✅ Action Items", action_items, "No action items recorded.")
+        )
+        _notion("PATCH", f"blocks/{page_id}/children", {"children": children})
+        return f"Entry page created: {page_url} — {title}"
+    except Exception:
+        return f"notion_create_entry_page error:\n{traceback.format_exc()}"
+
+
 def tool_notion_overwrite_page(page_id: str, content: str) -> str:
     """Clear all existing blocks on a page and replace with new content. Used to update the Health Board."""
     if not NOTION_API_KEY:
@@ -286,6 +337,23 @@ TOOLS = [
         },
     },
     {
+        "name": "notion_create_entry_page",
+        "description": "Create a new database entry page with a 4-section template (Summary, Full Notes/Transcript, Jarvis's Analysis, Action Items). Use this for ALL database entries instead of notion_create_page.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "parent_database_id": {"type": "string", "description": "Database data_source_id UUID (e.g. 41c072ec-4279-81f9-95b3-000bc0008c74)"},
+                "title":              {"type": "string", "description": "Entry title (e.g. '2026-11-18 — Call with investor')"},
+                "summary":            {"type": "string", "description": "📋 Summary section content"},
+                "full_notes":         {"type": "string", "description": "📝 Full Notes / Transcript section content"},
+                "jarvis_analysis":    {"type": "string", "description": "🤖 Jarvis's Analysis section content"},
+                "action_items":       {"type": "string", "description": "✅ Action Items section content"},
+                "extra_properties":   {"type": "string", "description": "Optional JSON string of additional database properties to set on the entry"},
+            },
+            "required": ["parent_database_id", "title"],
+        },
+    },
+    {
         "name": "notion_overwrite_page",
         "description": "Clear all existing content on a Notion page and replace with new content. Use this to update the Health Board with fresh status data.",
         "inputSchema": {
@@ -304,8 +372,9 @@ TOOL_FNS = {
     "notion_read_page":      lambda a: tool_notion_read_page(**a),
     "notion_create_page":    lambda a: tool_notion_create_page(**a),
     "notion_append_to_page": lambda a: tool_notion_append_to_page(**a),
-    "notion_read_database":  lambda a: tool_notion_read_database(**a),
-    "notion_overwrite_page": lambda a: tool_notion_overwrite_page(**a),
+    "notion_read_database":       lambda a: tool_notion_read_database(**a),
+    "notion_create_entry_page":   lambda a: tool_notion_create_entry_page(**a),
+    "notion_overwrite_page":      lambda a: tool_notion_overwrite_page(**a),
 }
 
 app = FastAPI()
