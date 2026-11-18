@@ -7,7 +7,7 @@ with open(path) as f:
     content = f.read()
 
 old = '            create_kwargs["extra_body"] = {"temperature": temperature}'
-new = ''  # Anthropic SDK rejects temperature both as extra_body and as a direct kwarg
+new = '            pass  # temperature skipped: Anthropic SDK rejects it'
 
 count = content.count(old)
 if count == 0:
