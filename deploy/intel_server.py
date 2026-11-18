@@ -10,6 +10,8 @@ All tools use public APIs — no additional keys required by default.
 Playwright (installed in build.sh) needed for browser-based tools.
 """
 import asyncio
+import base64
+import calendar
 import json
 import os
 import re
@@ -17,7 +19,7 @@ import sqlite3
 import traceback
 import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import uvicorn
@@ -825,6 +827,850 @@ def tool_competitive_map(vertical: str, context: str = "") -> str:
     return "\n".join(sections)
 
 
+# ── T5 New Intel Tools ────────────────────────────────────────────────────────
+
+TWILIO_SID   = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM  = os.environ.get("TWILIO_PHONE_NUMBER", "")
+NOTION_API_KEY = os.environ.get("NOTION_API_KEY", "")
+
+# DB IDs (from jarvis-config.toml)
+_HABIT_DB_ID   = "41c072ec-4279-81f5-84fe-000bab085ff1"
+_CALL_DB_ID    = "41c072ec-4279-81f9-95b3-000bc0008c74"
+_ACTION_DB_ID  = "41c072ec-4279-81f7-8f82-000bc6e8ed09"
+_DECISION_DB_ID = "41c072ec-4279-81e1-9e06-c0da3c683d22"
+_INTEL_DB      = JARVIS_DIR / "intel.db"
+
+
+def _sms_alert(body: str):
+    if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, TWILIO_TO]):
+        print(f"[intel] SMS skipped (no Twilio creds): {body[:80]}")
+        return
+    data = urllib.parse.urlencode({"To": TWILIO_TO, "From": TWILIO_FROM, "Body": body}).encode()
+    auth = base64.b64encode(f"{TWILIO_SID}:{TWILIO_TOKEN}".encode()).decode()
+    req = urllib.request.Request(
+        f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
+        data=data,
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"[intel] SMS error: {e}")
+
+
+def _ensure_intel_schema():
+    with sqlite3.connect(_INTEL_DB) as db:
+        db.execute("""CREATE TABLE IF NOT EXISTS whale_wallets (
+            address TEXT PRIMARY KEY, label TEXT, chain TEXT,
+            last_balance REAL, last_checked TEXT
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS exec_moves_seen (
+            key TEXT PRIMARY KEY, seen_at TEXT
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS reputation_seen (
+            key TEXT PRIMARY KEY, seen_at TEXT
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS space_law_seen (
+            key TEXT PRIMARY KEY, seen_at TEXT
+        )""")
+        db.commit()
+
+
+def _notion_query(database_id: str, page_size: int = 20) -> list[dict]:
+    if not NOTION_API_KEY:
+        return []
+    url = f"https://api.notion.com/v1/databases/{database_id}/query"
+    payload = json.dumps({"page_size": page_size}).encode()
+    req = urllib.request.Request(
+        url, data=payload,
+        headers={
+            "Authorization": f"Bearer {NOTION_API_KEY}",
+            "Notion-Version": "2022-06-28",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as r:
+            return json.loads(r.read()).get("results", [])
+    except Exception:
+        return []
+
+
+def _prop_text(page: dict, key: str) -> str:
+    props = page.get("properties", {})
+    p = props.get(key, {})
+    ptype = p.get("type", "")
+    if ptype == "title":
+        items = p.get("title", [])
+    elif ptype == "rich_text":
+        items = p.get("rich_text", [])
+    elif ptype == "number":
+        return str(p.get("number", ""))
+    elif ptype == "select":
+        s = p.get("select")
+        return s.get("name", "") if s else ""
+    else:
+        return ""
+    return "".join(i.get("plain_text", "") for i in items)
+
+
+def tool_fear_greed_composite(args: dict = None) -> str:
+    """
+    Composite Fear & Greed index: alternative.me (40%) + BTC dominance (20%)
+    + Binance funding rate (20%) + BTC 7-day momentum (20%).
+    """
+    sections = ["=== Composite Fear & Greed Index ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    # 1. alternative.me Fear & Greed (0-100)
+    fg_score = None
+    try:
+        data = json.loads(_get("https://api.alternative.me/fng/?limit=1"))
+        entry = data["data"][0]
+        fg_score = int(entry["value"])
+        fg_label = entry["value_classification"]
+        sections.append(f"Alt.me Fear & Greed (40%): {fg_score} — {fg_label}")
+    except Exception as e:
+        sections.append(f"Alt.me Fear & Greed: ERROR ({e})")
+        fg_score = 50
+
+    # 2. BTC dominance via CoinGecko (high dom = fear)
+    dom_score = None
+    try:
+        data = json.loads(_get("https://api.coingecko.com/api/v3/global"))
+        btc_dom = data["data"]["market_cap_percentage"].get("btc", 50)
+        # dom > 55 = fear, < 45 = greed; map to 0-100
+        dom_score = max(0, min(100, int((btc_dom - 30) * 100 / 40)))
+        sections.append(f"BTC Dominance (20%): {btc_dom:.1f}% → score {dom_score}")
+    except Exception as e:
+        sections.append(f"BTC Dominance: ERROR ({e})")
+        dom_score = 50
+
+    # 3. Binance BTC perp funding rate
+    fund_score = None
+    try:
+        data = json.loads(_get(
+            "https://fapi.binance.com/fapi/v1/premiumIndex?symbol=BTCUSDT"
+        ))
+        rate = float(data.get("lastFundingRate", 0))
+        # positive rate = greed (longs paying), map -0.1% to +0.1% → 0-100
+        fund_score = max(0, min(100, int(50 + rate * 100000)))
+        sections.append(f"Binance Funding Rate (20%): {rate*100:.4f}% → score {fund_score}")
+    except Exception as e:
+        sections.append(f"Binance Funding Rate: ERROR ({e})")
+        fund_score = 50
+
+    # 4. BTC 7-day momentum
+    mom_score = None
+    try:
+        data = json.loads(_get(
+            "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=7"
+        ))
+        prices = [p[1] for p in data.get("prices", [])]
+        if len(prices) >= 2:
+            change_pct = (prices[-1] - prices[0]) / prices[0] * 100
+            # -20% → 0, +20% → 100
+            mom_score = max(0, min(100, int(50 + change_pct * 2.5)))
+            sections.append(f"BTC 7-day Momentum (20%): {change_pct:+.1f}% → score {mom_score}")
+        else:
+            mom_score = 50
+    except Exception as e:
+        sections.append(f"BTC 7-day Momentum: ERROR ({e})")
+        mom_score = 50
+
+    composite = int(0.40 * fg_score + 0.20 * dom_score + 0.20 * fund_score + 0.20 * mom_score)
+    if composite >= 75:
+        label = "EXTREME GREED"
+    elif composite >= 55:
+        label = "GREED"
+    elif composite >= 45:
+        label = "NEUTRAL"
+    elif composite >= 25:
+        label = "FEAR"
+    else:
+        label = "EXTREME FEAR"
+
+    sections.append("")
+    sections.append(f"COMPOSITE SCORE: {composite}/100 — {label}")
+    sections.append("")
+    sections.append("Interpretation:")
+    sections.append("  <25 = Extreme Fear → potential accumulation zone")
+    sections.append("  25-45 = Fear → cautious; watch for reversal signals")
+    sections.append("  45-55 = Neutral → no strong signal")
+    sections.append("  55-75 = Greed → reduce exposure, tighten stops")
+    sections.append("  >75 = Extreme Greed → strong caution, possible top")
+    return "\n".join(sections)
+
+
+def tool_whale_wallet_tracker(action: str = "list", address: str = "",
+                               chain: str = "eth", label: str = "") -> str:
+    """
+    Track whale wallets. add/remove/list/check.
+    Large moves (>$500K) trigger SMS to Andre.
+    """
+    _ensure_intel_schema()
+    with sqlite3.connect(_INTEL_DB) as db:
+        if action == "add":
+            if not address:
+                return "ERROR: address required for add action."
+            db.execute(
+                "INSERT OR REPLACE INTO whale_wallets VALUES (?,?,?,?,?)",
+                (address.lower(), label or address[:8], chain.lower(), 0.0,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            db.commit()
+            return f"Tracking {chain.upper()} wallet: {address} ({label or 'unlabeled'})"
+
+        if action == "remove":
+            db.execute("DELETE FROM whale_wallets WHERE address=?", (address.lower(),))
+            db.commit()
+            return f"Removed {address} from tracking."
+
+        rows = db.execute("SELECT address, label, chain, last_balance, last_checked FROM whale_wallets").fetchall()
+
+    if action == "list" or not rows:
+        if not rows:
+            return "No whale wallets tracked. Use action='add' with an address."
+        lines = [f"Tracked Whale Wallets ({len(rows)}):"]
+        for addr, lbl, chain_, bal, checked in rows:
+            lines.append(f"  [{chain_.upper()}] {lbl}: {addr} — last bal: {bal:.4f}, checked: {checked[:10]}")
+        return "\n".join(lines)
+
+    # action == "check": poll current balances
+    lines = [f"=== Whale Wallet Check — {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} ==="]
+    with sqlite3.connect(_INTEL_DB) as db:
+        for addr, lbl, chain_, prev_bal, _ in rows:
+            new_bal = None
+            try:
+                if chain_ == "eth":
+                    eth_key = os.environ.get("ETHERSCAN_API_KEY", "YourApiKeyToken")
+                    url = (f"https://api.etherscan.io/api?module=account&action=balance"
+                           f"&address={addr}&tag=latest&apikey={eth_key}")
+                    data = json.loads(_get(url))
+                    new_bal = int(data.get("result", 0)) / 1e18
+                elif chain_ == "btc":
+                    data = json.loads(_get(f"https://blockchain.info/rawaddr/{addr}?limit=0"))
+                    new_bal = data.get("final_balance", 0) / 1e8
+                else:
+                    lines.append(f"  {lbl}: unsupported chain {chain_}")
+                    continue
+            except Exception as e:
+                lines.append(f"  {lbl} ({addr[:10]}…): fetch error — {e}")
+                continue
+
+            if new_bal is not None:
+                delta = new_bal - prev_bal
+                symbol = "ETH" if chain_ == "eth" else "BTC"
+                lines.append(f"  {lbl}: {new_bal:.4f} {symbol} (Δ {delta:+.4f})")
+                # rough USD estimate
+                try:
+                    price_data = json.loads(_get(
+                        f"https://api.coingecko.com/api/v3/simple/price?ids={'ethereum' if chain_=='eth' else 'bitcoin'}&vs_currencies=usd"
+                    ))
+                    price_usd = list(price_data.values())[0]["usd"]
+                    delta_usd = abs(delta) * price_usd
+                    if delta_usd > 500_000:
+                        msg = f"[WHALE ALERT] {lbl}: {delta:+.4f} {symbol} (${delta_usd:,.0f}) — {addr[:12]}…"
+                        _sms_alert(msg)
+                        lines.append(f"    ⚠ SMS alert sent: ${delta_usd:,.0f} move")
+                except Exception:
+                    pass
+                db.execute(
+                    "UPDATE whale_wallets SET last_balance=?, last_checked=? WHERE address=?",
+                    (new_bal, datetime.now(timezone.utc).isoformat(), addr),
+                )
+        db.commit()
+    return "\n".join(lines)
+
+
+def tool_macro_event_calendar(weeks_ahead: int = 2) -> str:
+    """
+    Macro event calendar: ForexFactory high-impact events + FOMC dates + options expiry.
+    Converts to MST. Returns next N weeks of key market-moving events.
+    """
+    sections = [f"=== Macro Event Calendar (next {weeks_ahead} week(s)) ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    # ForexFactory JSON feeds
+    ff_events = []
+    for feed in ["thisweek", "nextweek"]:
+        try:
+            url = f"https://nfs.faireconomy.media/ff_calendar_{feed}.json"
+            data = json.loads(_get(url))
+            ff_events.extend(data)
+        except Exception as e:
+            sections.append(f"ForexFactory {feed}: fetch error — {e}")
+
+    # Filter high-impact USD events
+    high_impact = [e for e in ff_events if e.get("impact") == "High" and e.get("country") == "USD"]
+
+    if high_impact:
+        sections.append("HIGH IMPACT USD EVENTS:")
+        for e in high_impact[:20]:
+            date_str = e.get("date", "")
+            time_str = e.get("time", "")
+            title = e.get("title", "")
+            forecast = e.get("forecast", "")
+            prev = e.get("previous", "")
+            sections.append(f"  {date_str} {time_str} — {title}"
+                            + (f" | Forecast: {forecast}" if forecast else "")
+                            + (f" | Prev: {prev}" if prev else ""))
+    else:
+        sections.append("No high-impact USD events found in ForexFactory feeds.")
+
+    sections.append("")
+    sections.append("HARDCODED KEY DATES:")
+
+    # FOMC 2025 approximate dates (hardcoded for reliability)
+    fomc_dates = [
+        "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18",
+        "2025-07-30", "2025-09-17", "2025-10-29", "2025-12-10",
+        "2026-01-28", "2026-03-18", "2026-04-29", "2026-06-17",
+    ]
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    upcoming_fomc = [d for d in fomc_dates if d >= today_str][:4]
+    for d in upcoming_fomc:
+        sections.append(f"  {d} — FOMC Rate Decision (est.)")
+
+    # Monthly options expiry: 3rd Friday
+    now = datetime.now(timezone.utc)
+    for mo_offset in range(weeks_ahead):
+        mo = now.month + mo_offset
+        yr = now.year + (mo - 1) // 12
+        mo = ((mo - 1) % 12) + 1
+        cal = calendar.monthcalendar(yr, mo)
+        fridays = [week[4] for week in cal if week[4] > 0]
+        if len(fridays) >= 3:
+            opex = f"{yr}-{mo:02d}-{fridays[2]:02d}"
+            if opex >= today_str:
+                sections.append(f"  {opex} — Monthly Options Expiry (OPEX)")
+
+    sections.append("")
+    sections.append("Note: All times in UTC. Convert MST = UTC-7 (MDT) or UTC-6 (MST winter).")
+    return "\n".join(sections)
+
+
+def tool_space_funding_radar(days_back: int = 14) -> str:
+    """
+    Scan SpaceNews, TechCrunch, SpaceflightNow RSS for funding rounds, investments,
+    and M&A in the space sector. Flags amounts and investors for CMC deal flow.
+    """
+    sections = [f"=== Space Funding Radar (last {days_back} days) ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    feeds = [
+        ("SpaceNews", "https://spacenews.com/feed/"),
+        ("TechCrunch Space", "https://techcrunch.com/tag/space/feed/"),
+        ("SpaceflightNow", "https://spaceflightnow.com/feed/"),
+        ("Space.com", "https://www.space.com/feeds/all"),
+    ]
+
+    amount_pattern = re.compile(
+        r'\$[\d,]+(?:\.\d+)?(?:\s*(?:million|billion|M|B|bn))?', re.IGNORECASE
+    )
+    funding_keywords = re.compile(
+        r'\b(?:raises?|funding|investment|round|series [A-Z]|venture|VC|seed|IPO|SPAC|acqui(?:re|sition))\b',
+        re.IGNORECASE
+    )
+
+    hits = []
+    for source, feed_url in feeds:
+        try:
+            raw = _get(feed_url).decode("utf-8", errors="replace")
+            titles = re.findall(r"<title><!\[CDATA\[(.*?)\]\]></title>", raw)
+            descs = re.findall(r"<description><!\[CDATA\[(.*?)\]\]></description>", raw)
+            links = re.findall(r"<link>(https?://[^<]+)</link>", raw)
+            pubdats = re.findall(r"<pubDate>(.*?)</pubDate>", raw)
+
+            for i, title in enumerate(titles[1:]):  # skip channel title
+                desc = descs[i] if i < len(descs) else ""
+                text = f"{title} {desc}"
+                if funding_keywords.search(text):
+                    amounts = amount_pattern.findall(text)
+                    hits.append({
+                        "source": source,
+                        "title": title.strip(),
+                        "amounts": amounts[:3],
+                        "url": links[i + 1] if i + 1 < len(links) else "",
+                        "pub": pubdats[i + 1][:22] if i + 1 < len(pubdats) else "",
+                    })
+        except Exception as e:
+            sections.append(f"  [{source}] feed error: {e}")
+
+    if hits:
+        sections.append(f"Found {len(hits)} space funding/deal items:\n")
+        for h in hits[:15]:
+            amt_str = " — " + ", ".join(h["amounts"]) if h["amounts"] else ""
+            sections.append(f"[{h['source']}] {h['title']}{amt_str}")
+            sections.append(f"  {h['pub']} | {h['url']}")
+            sections.append("")
+    else:
+        sections.append("No space funding news found in current feeds.")
+
+    sections.append("→ Sources: SpaceNews, TechCrunch/Space, SpaceflightNow, Space.com")
+    return "\n".join(sections)
+
+
+def tool_executive_move_tracker(companies: str = "", roles: str = "") -> str:
+    """
+    Track C-suite appointments, departures, and board changes.
+    Monitors Google News RSS for given companies or default watchlist.
+    New moves trigger SMS alert. Deduplicates via SQLite.
+    """
+    _ensure_intel_schema()
+    default_companies = [
+        "SpaceX", "Rocket Lab", "Planet Labs", "Maxar Technologies",
+        "Relativity Space", "Sierra Space", "Voyager Space",
+        "Astrobotic", "Intuitive Machines",
+    ]
+    watch = [c.strip() for c in companies.split(",")] if companies else default_companies
+    target_roles = re.compile(
+        r'\b(?:CEO|CFO|COO|CTO|President|Chairman|VP|Director|appointed|joins|departs|resigns|named)\b',
+        re.IGNORECASE
+    )
+
+    sections = [f"=== Executive Move Tracker ===",
+                f"Watching: {', '.join(watch[:6])}{'…' if len(watch) > 6 else ''}",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    new_moves = []
+    with sqlite3.connect(_INTEL_DB) as db:
+        for company in watch[:8]:
+            items = _news_rss(f"{company} executive appointed hired departure CEO CFO", n=8)
+            for item in items:
+                if not target_roles.search(item["title"]):
+                    continue
+                key = f"{company}::{item['title'][:80]}"
+                exists = db.execute("SELECT 1 FROM exec_moves_seen WHERE key=?", (key,)).fetchone()
+                if exists:
+                    continue
+                db.execute("INSERT OR IGNORE INTO exec_moves_seen VALUES (?,?)",
+                           (key, datetime.now(timezone.utc).isoformat()))
+                new_moves.append({"company": company, **item})
+        db.commit()
+
+    if new_moves:
+        sections.append(f"NEW EXECUTIVE MOVES ({len(new_moves)}):\n")
+        for m in new_moves[:12]:
+            sections.append(f"[{m['company']}] {m['title']}")
+            sections.append(f"  {m.get('pub', '')} | {m.get('url', '')}")
+            sections.append("")
+        if new_moves:
+            summary = f"[EXEC MOVES] {len(new_moves)} new: {new_moves[0]['title'][:80]}"
+            _sms_alert(summary)
+            sections.append(f"SMS alert sent for {len(new_moves)} new moves.")
+    else:
+        sections.append("No new executive moves found (all previously seen or no hits).")
+
+    return "\n".join(sections)
+
+
+def tool_trading_behavior_analyzer(lookback_days: int = 30) -> str:
+    """
+    Correlate Andre's trading P&L with sleep, exercise, and day-of-week
+    from the Notion Habit & Performance Log. Identifies behavioral edges.
+    """
+    if not NOTION_API_KEY:
+        return "ERROR: NOTION_API_KEY not set. Cannot query Habit & Performance Log."
+
+    sections = [f"=== Trading Behavior Analyzer (last {lookback_days} days) ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    rows = _notion_query(_HABIT_DB_ID, page_size=50)
+    if not rows:
+        return "No data found in Habit & Performance Log. Check NOTION_API_KEY and database ID."
+
+    records = []
+    for page in rows:
+        date_str = ""
+        props = page.get("properties", {})
+        # Try to get date
+        for date_key in ["Date", "date", "Day", "Created"]:
+            d = props.get(date_key, {})
+            if d.get("type") == "date" and d.get("date"):
+                date_str = d["date"].get("start", "")[:10]
+                break
+        if not date_str:
+            continue
+
+        pnl_str = _prop_text(page, "P&L") or _prop_text(page, "PnL") or _prop_text(page, "Trading P&L")
+        sleep_str = _prop_text(page, "Sleep") or _prop_text(page, "Sleep Hours") or _prop_text(page, "Hours Slept")
+        exercise_str = _prop_text(page, "Exercise") or _prop_text(page, "Workout") or _prop_text(page, "Exercise Minutes")
+
+        try:
+            pnl = float(pnl_str.replace("$", "").replace(",", "")) if pnl_str else None
+        except ValueError:
+            pnl = None
+        try:
+            sleep = float(sleep_str) if sleep_str else None
+        except ValueError:
+            sleep = None
+        try:
+            exercise = float(exercise_str) if exercise_str else None
+        except ValueError:
+            exercise = None
+
+        try:
+            dt = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        records.append({"date": date_str, "dow": dt.strftime("%A"),
+                        "pnl": pnl, "sleep": sleep, "exercise": exercise})
+
+    if not records:
+        sections.append("No parseable records found. Check property names in Habit & Performance Log.")
+        sections.append("Expected properties: Date, P&L, Sleep, Exercise")
+        return "\n".join(sections)
+
+    sections.append(f"Loaded {len(records)} records from Habit & Performance Log.\n")
+
+    # Day-of-week P&L
+    pnl_by_dow: dict[str, list] = {}
+    for r in records:
+        if r["pnl"] is not None:
+            pnl_by_dow.setdefault(r["dow"], []).append(r["pnl"])
+
+    if pnl_by_dow:
+        sections.append("P&L BY DAY OF WEEK:")
+        dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        for d in dow_order:
+            vals = pnl_by_dow.get(d, [])
+            if vals:
+                avg = sum(vals) / len(vals)
+                sections.append(f"  {d:12s}: avg ${avg:+,.0f} ({len(vals)} days)")
+        sections.append("")
+
+    # Sleep correlation
+    sleep_records = [(r["sleep"], r["pnl"]) for r in records if r["sleep"] and r["pnl"] is not None]
+    if len(sleep_records) >= 5:
+        good_sleep = [p for s, p in sleep_records if s >= 7.5]
+        poor_sleep = [p for s, p in sleep_records if s < 7.5]
+        sections.append("SLEEP CORRELATION:")
+        if good_sleep:
+            sections.append(f"  ≥7.5h sleep: avg P&L ${sum(good_sleep)/len(good_sleep):+,.0f} ({len(good_sleep)} days)")
+        if poor_sleep:
+            sections.append(f"  <7.5h sleep: avg P&L ${sum(poor_sleep)/len(poor_sleep):+,.0f} ({len(poor_sleep)} days)")
+        sections.append("")
+
+    # Exercise correlation
+    ex_records = [(r["exercise"], r["pnl"]) for r in records if r["exercise"] and r["pnl"] is not None]
+    if len(ex_records) >= 5:
+        with_ex = [p for e, p in ex_records if e and e > 0]
+        no_ex = [p for e, p in ex_records if not e or e == 0]
+        sections.append("EXERCISE CORRELATION:")
+        if with_ex:
+            sections.append(f"  Exercise days: avg P&L ${sum(with_ex)/len(with_ex):+,.0f} ({len(with_ex)} days)")
+        if no_ex:
+            sections.append(f"  Rest days:     avg P&L ${sum(no_ex)/len(no_ex):+,.0f} ({len(no_ex)} days)")
+        sections.append("")
+
+    # Best and worst days
+    pnl_records = [r for r in records if r["pnl"] is not None]
+    if pnl_records:
+        best = max(pnl_records, key=lambda r: r["pnl"])
+        worst = min(pnl_records, key=lambda r: r["pnl"])
+        sections.append("EXTREMES:")
+        sections.append(f"  Best day:  {best['date']} ({best['dow']}) — ${best['pnl']:+,.0f}")
+        sections.append(f"  Worst day: {worst['date']} ({worst['dow']}) — ${worst['pnl']:+,.0f}")
+
+    return "\n".join(sections)
+
+
+def tool_media_reputation_monitor(entity: str, alert_on_negative: bool = True) -> str:
+    """
+    Monitor media reputation for a person, company, or brand.
+    Sentiment-scores headlines, deduplicates via SQLite, SMS on new negative hits.
+    """
+    _ensure_intel_schema()
+    neg_words = re.compile(
+        r'\b(?:fraud|lawsuit|scandal|arrested|SEC|investigation|bankruptcy|'
+        r'layoff|hack|breach|recall|fined|penalty|fail|collapse|crash|charges)\b',
+        re.IGNORECASE
+    )
+    pos_words = re.compile(
+        r'\b(?:raises?|funding|growth|partnership|launch|award|record|profit|'
+        r'breakthrough|expansion|milestone|contract|win|success)\b',
+        re.IGNORECASE
+    )
+
+    sections = [f"=== Media Reputation Monitor: {entity} ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    items = _news_rss(entity, n=15)
+    items += _ddg_search(f"{entity} news reputation", n=6)
+
+    new_negative = []
+    with sqlite3.connect(_INTEL_DB) as db:
+        for item in items:
+            title = item.get("title", "")
+            if not title or len(title) < 10:
+                continue
+            key = f"rep::{entity}::{title[:80]}"
+            is_neg = bool(neg_words.search(title))
+            is_pos = bool(pos_words.search(title))
+            sentiment = "NEGATIVE" if is_neg else ("POSITIVE" if is_pos else "NEUTRAL")
+            seen = db.execute("SELECT 1 FROM reputation_seen WHERE key=?", (key,)).fetchone()
+            if not seen:
+                db.execute("INSERT OR IGNORE INTO reputation_seen VALUES (?,?)",
+                           (key, datetime.now(timezone.utc).isoformat()))
+                if is_neg:
+                    new_negative.append(title)
+                sections.append(f"[{sentiment}] {title}")
+                sections.append(f"  {item.get('pub','')[:22]} | {item.get('url','')}")
+                sections.append("")
+        db.commit()
+
+    if new_negative and alert_on_negative:
+        msg = f"[REPUTATION ALERT] {entity}: {len(new_negative)} new negative hits. First: {new_negative[0][:100]}"
+        _sms_alert(msg)
+        sections.append(f"SMS alert sent: {len(new_negative)} new negative mentions.")
+
+    if not any("[" in s for s in sections[3:]):
+        sections.append("No new mentions found.")
+
+    return "\n".join(sections)
+
+
+def tool_satellite_launch_scheduler(days_ahead: int = 30) -> str:
+    """
+    Upcoming satellite/rocket launches from Launch Library 2 + RocketLaunch.live.
+    Flags CMC-relevant missions: LEO/SSO orbit, resource-related, commercial payload.
+    """
+    sections = [f"=== Satellite Launch Scheduler (next {days_ahead} days) ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    cmc_keywords = re.compile(
+        r'\b(?:mining|asteroid|resource|LEO|SSO|commercial|payload|'
+        r'SpaceX|Rocket Lab|Relativity|Sierra|Astrobotic|Intuitive|lunar|Moon)\b',
+        re.IGNORECASE
+    )
+
+    launches = []
+
+    # Launch Library 2 (public, no key required)
+    try:
+        url = (f"https://ll.thespacedevs.com/2.2.0/launch/upcoming/"
+               f"?limit=25&offset=0&format=json")
+        data = json.loads(_get(url, timeout=15))
+        for item in data.get("results", []):
+            name = item.get("name", "")
+            win_start = item.get("window_start", "")[:16]
+            rocket = item.get("rocket", {}).get("configuration", {}).get("name", "")
+            mission = item.get("mission") or {}
+            orbit = mission.get("orbit", {})
+            orbit_name = orbit.get("name", "") if orbit else ""
+            desc = mission.get("description", "") or ""
+            is_cmc = bool(cmc_keywords.search(f"{name} {desc} {orbit_name}"))
+            launches.append({
+                "name": name, "date": win_start, "rocket": rocket,
+                "orbit": orbit_name, "cmc_relevant": is_cmc,
+            })
+    except Exception as e:
+        sections.append(f"Launch Library 2: fetch error — {e}")
+
+    # RocketLaunch.live (backup / enrichment)
+    try:
+        data = json.loads(_get("https://fdo.rocketlaunch.live/json/launches/next/5"))
+        for item in data.get("result", []):
+            name = item.get("name", "")
+            dt_obj = item.get("t0") or item.get("win_open") or ""
+            vehicle = item.get("vehicle", {}).get("name", "") if item.get("vehicle") else ""
+            # dedup by rough name match
+            if not any(name[:20] in existing["name"] for existing in launches):
+                launches.append({
+                    "name": name, "date": str(dt_obj)[:16],
+                    "rocket": vehicle, "orbit": "", "cmc_relevant": False,
+                })
+    except Exception as e:
+        sections.append(f"RocketLaunch.live: fetch error — {e}")
+
+    if launches:
+        cmc = [l for l in launches if l["cmc_relevant"]]
+        other = [l for l in launches if not l["cmc_relevant"]]
+
+        if cmc:
+            sections.append(f"CMC-RELEVANT LAUNCHES ({len(cmc)}):")
+            for l in cmc:
+                sections.append(f"  {l['date']} — {l['name']}")
+                if l['rocket']:
+                    sections.append(f"    Vehicle: {l['rocket']}{' | Orbit: ' + l['orbit'] if l['orbit'] else ''}")
+            sections.append("")
+
+        sections.append(f"ALL UPCOMING LAUNCHES ({len(launches)}):")
+        for l in (launches[:20]):
+            cmc_flag = " ★" if l["cmc_relevant"] else ""
+            sections.append(f"  {l['date']} — {l['name']}{cmc_flag}")
+    else:
+        sections.append("No launch data returned.")
+
+    sections.append("")
+    sections.append("★ = CMC-relevant (LEO/SSO, commercial mining, or CMC partner vehicle)")
+    return "\n".join(sections)
+
+
+def tool_space_law_pipeline(query: str = "") -> str:
+    """
+    Monitor FAA, SpaceNews, UNOOSA, TheSpaceReview for space law, regulation,
+    and licensing news. Deduplicates via SQLite. Critical for CMC compliance.
+    """
+    _ensure_intel_schema()
+    law_keywords = re.compile(
+        r'\b(?:FAA|license|regulation|regulatory|legislation|law|treaty|'
+        r'liability|insurance|permit permit|NOAA|FCC|spectrum|orbital slot|'
+        r'UNOOSA|Outer Space Treaty|Commercial Space|authorization|compliance)\b',
+        re.IGNORECASE
+    )
+
+    feeds = [
+        ("SpaceNews Policy", "https://spacenews.com/section/policy/feed/"),
+        ("SpaceNews", "https://spacenews.com/feed/"),
+        ("The Space Review", "https://www.thespacereview.com/rss.xml"),
+        ("Space Policy Online", "https://www.spacepolicyonline.com/feed"),
+    ]
+
+    search_terms = query or "FAA commercial space license regulation 2025"
+    items = _news_rss(search_terms, n=15)
+
+    sections = [f"=== Space Law & Regulatory Pipeline ===",
+                f"Query: {search_terms}",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    new_items = []
+    with sqlite3.connect(_INTEL_DB) as db:
+        for item in items:
+            title = item.get("title", "")
+            if not law_keywords.search(title):
+                continue
+            key = f"law::{title[:100]}"
+            seen = db.execute("SELECT 1 FROM space_law_seen WHERE key=?", (key,)).fetchone()
+            if not seen:
+                db.execute("INSERT OR IGNORE INTO space_law_seen VALUES (?,?)",
+                           (key, datetime.now(timezone.utc).isoformat()))
+                new_items.append(item)
+        db.commit()
+
+        # Also pull from RSS feeds directly
+        for source, feed_url in feeds[:2]:
+            try:
+                raw = _get(feed_url).decode("utf-8", errors="replace")
+                titles = re.findall(r"<title><!\[CDATA\[(.*?)\]\]></title>", raw)
+                links = re.findall(r"<link>(https?://[^<]+)</link>", raw)
+                pubdats = re.findall(r"<pubDate>(.*?)</pubDate>", raw)
+                for i, t in enumerate(titles[1:12]):
+                    if not law_keywords.search(t):
+                        continue
+                    key = f"law::{t[:100]}"
+                    seen = db.execute("SELECT 1 FROM space_law_seen WHERE key=?", (key,)).fetchone()
+                    if not seen:
+                        db.execute("INSERT OR IGNORE INTO space_law_seen VALUES (?,?)",
+                                   (key, datetime.now(timezone.utc).isoformat()))
+                        new_items.append({
+                            "title": t.strip(), "source": source,
+                            "url": links[i + 1] if i + 1 < len(links) else "",
+                            "pub": pubdats[i + 1][:22] if i + 1 < len(pubdats) else "",
+                        })
+            except Exception as e:
+                sections.append(f"  [{source}] feed error: {e}")
+        db.commit()
+
+    if new_items:
+        sections.append(f"NEW SPACE LAW / REGULATORY ITEMS ({len(new_items)}):\n")
+        for item in new_items[:15]:
+            sections.append(f"• {item['title']}")
+            sections.append(f"  {item.get('pub','')[:22]} | {item.get('url','')}")
+            sections.append("")
+    else:
+        sections.append("No new space law items found (all previously seen).")
+
+    sections.append("Sources: SpaceNews Policy, The Space Review, Google News RSS")
+    sections.append("→ Use regulatory_monitor('FAA') for US regulatory enforcement actions.")
+    return "\n".join(sections)
+
+
+def tool_life_os_snapshot(args: dict = None) -> str:
+    """
+    Weekly Life OS snapshot: synthesizes Habit Log, Call Journal, Action Log,
+    and Decision Log from Notion into a coherent weekly review.
+    """
+    if not NOTION_API_KEY:
+        return "ERROR: NOTION_API_KEY not set. Cannot query Notion databases."
+
+    sections = [f"=== Life OS Weekly Snapshot ===",
+                f"Generated: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}", ""]
+
+    # 1. Habit & Performance Log
+    habit_rows = _notion_query(_HABIT_DB_ID, page_size=10)
+    sections.append(f"HABIT & PERFORMANCE LOG ({len(habit_rows)} recent entries):")
+    if habit_rows:
+        for page in habit_rows[:5]:
+            title = _prop_text(page, "Name") or _prop_text(page, "Title") or "(no title)"
+            date_p = page.get("properties", {}).get("Date", {})
+            date_str = ""
+            if date_p.get("type") == "date" and date_p.get("date"):
+                date_str = date_p["date"].get("start", "")[:10]
+            pnl = _prop_text(page, "P&L") or _prop_text(page, "PnL") or ""
+            sleep = _prop_text(page, "Sleep") or _prop_text(page, "Sleep Hours") or ""
+            line = f"  {date_str} {title}"
+            if pnl:
+                line += f" | P&L: {pnl}"
+            if sleep:
+                line += f" | Sleep: {sleep}h"
+            sections.append(line)
+    else:
+        sections.append("  No habit data found.")
+    sections.append("")
+
+    # 2. Call Journal (recent calls)
+    call_rows = _notion_query(_CALL_DB_ID, page_size=8)
+    sections.append(f"RECENT CALLS ({len(call_rows)} entries):")
+    if call_rows:
+        for page in call_rows[:5]:
+            title = _prop_text(page, "Name") or _prop_text(page, "Title") or "(no title)"
+            sections.append(f"  • {title}")
+    else:
+        sections.append("  No recent calls logged.")
+    sections.append("")
+
+    # 3. Open Action Items
+    action_rows = _notion_query(_ACTION_DB_ID, page_size=15)
+    open_actions = []
+    for page in action_rows:
+        status = _prop_text(page, "Status") or ""
+        if status.lower() not in ("done", "completed", "complete", "closed"):
+            title = _prop_text(page, "Name") or _prop_text(page, "Title") or "(no title)"
+            open_actions.append(title)
+    sections.append(f"OPEN ACTION ITEMS ({len(open_actions)}):")
+    for a in open_actions[:8]:
+        sections.append(f"  ☐ {a}")
+    if not open_actions:
+        sections.append("  None open — inbox zero!")
+    sections.append("")
+
+    # 4. Recent Decisions
+    decision_rows = _notion_query(_DECISION_DB_ID, page_size=5)
+    sections.append(f"RECENT DECISIONS ({len(decision_rows)} entries):")
+    if decision_rows:
+        for page in decision_rows[:5]:
+            title = _prop_text(page, "Name") or _prop_text(page, "Title") or "(no title)"
+            sections.append(f"  ✓ {title}")
+    else:
+        sections.append("  No recent decisions logged.")
+    sections.append("")
+
+    # Summary
+    sections.append("WEEKLY SYNTHESIS:")
+    sections.append(f"  Calls logged:    {len(call_rows)}")
+    sections.append(f"  Open actions:    {len(open_actions)}")
+    sections.append(f"  Habit entries:   {len(habit_rows)}")
+    sections.append(f"  Decisions made:  {len(decision_rows)}")
+    sections.append("")
+    sections.append("→ Run trading_behavior_analyzer() for P&L pattern breakdown.")
+    sections.append("→ Run news_briefing() for market + strategic context.")
+    return "\n".join(sections)
+
+
 # ── MCP manifest ───────────────────────────────────────────────────────────────
 
 TOOLS = [
@@ -1002,6 +1848,162 @@ TOOLS = [
             "required": ["location"],
         },
     },
+    # ── T5 ─────────────────────────────────────────────────────────────────────
+    {
+        "name": "fear_greed_composite",
+        "description": (
+            "Composite crypto Fear & Greed index combining 4 signals: "
+            "alternative.me index (40%), BTC dominance from CoinGecko (20%), "
+            "Binance BTC perpetual funding rate (20%), BTC 7-day momentum (20%). "
+            "Returns composite score 0-100 with market interpretation. "
+            "Use before entering large trades to gauge market sentiment."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "whale_wallet_tracker",
+        "description": (
+            "Track large crypto whale wallets on ETH and BTC. "
+            "Actions: add (track a new address), remove, list (show all), check (poll balances). "
+            "Sends SMS alert to Andre when any wallet moves >$500K. "
+            "Use for on-chain early warning on market-moving wallets."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action":  {"type": "string", "enum": ["add", "remove", "list", "check"], "default": "list"},
+                "address": {"type": "string", "default": "", "description": "Wallet address (required for add/remove)"},
+                "chain":   {"type": "string", "enum": ["eth", "btc"], "default": "eth"},
+                "label":   {"type": "string", "default": "", "description": "Friendly label for this wallet"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "macro_event_calendar",
+        "description": (
+            "High-impact macro event calendar for traders. "
+            "Pulls ForexFactory USD events + hardcoded FOMC dates + monthly OPEX dates. "
+            "Returns next 1-4 weeks of market-moving events. "
+            "Essential before sizing positions around Fed week or OPEX."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "weeks_ahead": {"type": "integer", "default": 2, "description": "How many weeks to show (1-4)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "space_funding_radar",
+        "description": (
+            "Scan space-sector RSS feeds for funding rounds, investments, M&A, and IPOs. "
+            "Covers SpaceNews, TechCrunch/Space, SpaceflightNow. "
+            "Extracts dollar amounts and investor names. "
+            "Critical for CMC deal flow awareness and competitive positioning."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days_back": {"type": "integer", "default": 14, "description": "Lookback window in days"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "executive_move_tracker",
+        "description": (
+            "Track C-suite appointments, departures, and board changes at space companies. "
+            "Monitors Google News RSS for leadership changes. "
+            "New moves are deduplicated via SQLite and trigger an SMS alert. "
+            "Default watchlist: SpaceX, Rocket Lab, Planet Labs, Maxar, Relativity, Sierra Space."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "companies": {"type": "string", "default": "", "description": "Comma-separated company list (empty = default watchlist)"},
+                "roles":     {"type": "string", "default": "", "description": "Role keywords to watch (e.g. 'CEO,CFO,President')"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "trading_behavior_analyzer",
+        "description": (
+            "Analyze Andre's trading performance patterns from the Notion Habit & Performance Log. "
+            "Correlates P&L with sleep hours, exercise, and day-of-week to find behavioral edges. "
+            "Identifies best/worst trading days and conditions. "
+            "Requires NOTION_API_KEY environment variable."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "lookback_days": {"type": "integer", "default": 30, "description": "Days of history to analyze"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "media_reputation_monitor",
+        "description": (
+            "Monitor media reputation for any person, company, or brand. "
+            "Sentiment-scores headlines as POSITIVE / NEUTRAL / NEGATIVE. "
+            "Deduplicates via SQLite — only new mentions are shown. "
+            "Triggers SMS alert to Andre when new negative hits appear. "
+            "Use for Andre, NexFlow, CMC, key investors, or counterparties."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "entity":           {"type": "string", "description": "Person, company, or brand to monitor"},
+                "alert_on_negative": {"type": "boolean", "default": True, "description": "SMS alert on new negative mentions"},
+            },
+            "required": ["entity"],
+        },
+    },
+    {
+        "name": "satellite_launch_scheduler",
+        "description": (
+            "Upcoming rocket and satellite launches from Launch Library 2 + RocketLaunch.live. "
+            "Flags CMC-relevant missions: LEO/SSO orbit, resource/mining payloads, SpaceX/Rocket Lab. "
+            "Use to track launch windows relevant to CMC thesis and competitive intelligence."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days_ahead": {"type": "integer", "default": 30, "description": "Days of launches to retrieve"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "space_law_pipeline",
+        "description": (
+            "Monitor FAA, SpaceNews Policy, and The Space Review for space law, "
+            "licensing, and regulatory developments. "
+            "Deduplicates via SQLite. "
+            "Critical for CMC launch licensing, orbital slot compliance, and Outer Space Treaty tracking."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "default": "", "description": "Search query (default: FAA commercial space license regulation)"},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "life_os_snapshot",
+        "description": (
+            "Weekly Life OS snapshot synthesizing 4 Notion databases: "
+            "Habit & Performance Log, Call Journal, Action Log, Decision Log. "
+            "Returns open action items, recent calls, habit data, and decisions in one view. "
+            "Run every Monday morning as part of the weekly review ritual. "
+            "Requires NOTION_API_KEY."
+        ),
+        "inputSchema": {"type": "object", "properties": {}, "required": []},
+    },
     # ── T4 ─────────────────────────────────────────────────────────────────────
     {
         "name": "competitive_map",
@@ -1024,17 +2026,28 @@ TOOLS = [
 ]
 
 TOOL_FNS = {
-    "osint_person":        lambda a: tool_osint_person(**a),
-    "company_intel":       lambda a: tool_company_intel(**a),
-    "regulatory_monitor":  lambda a: tool_regulatory_monitor(**a),
-    "news_briefing":       lambda a: tool_news_briefing(**a),
-    "flight_intel":        lambda a: tool_flight_intel(**a),
-    "maritime_intel":      lambda a: tool_maritime_intel(**a),
-    "satellite_imagery":   lambda a: tool_satellite_imagery(**a),
-    "patent_search":       lambda a: tool_patent_search(**a),
-    "track_entity":        lambda a: tool_track_entity(**a),
-    "real_estate_scan":    lambda a: tool_real_estate_scan(**a),
-    "competitive_map":     lambda a: tool_competitive_map(**a),
+    "osint_person":               lambda a: tool_osint_person(**a),
+    "company_intel":              lambda a: tool_company_intel(**a),
+    "regulatory_monitor":         lambda a: tool_regulatory_monitor(**a),
+    "news_briefing":              lambda a: tool_news_briefing(**a),
+    "flight_intel":               lambda a: tool_flight_intel(**a),
+    "maritime_intel":             lambda a: tool_maritime_intel(**a),
+    "satellite_imagery":          lambda a: tool_satellite_imagery(**a),
+    "patent_search":              lambda a: tool_patent_search(**a),
+    "track_entity":               lambda a: tool_track_entity(**a),
+    "real_estate_scan":           lambda a: tool_real_estate_scan(**a),
+    "competitive_map":            lambda a: tool_competitive_map(**a),
+    # T5 — new intel tools
+    "fear_greed_composite":       lambda a: tool_fear_greed_composite(a),
+    "whale_wallet_tracker":       lambda a: tool_whale_wallet_tracker(**a),
+    "macro_event_calendar":       lambda a: tool_macro_event_calendar(**a),
+    "space_funding_radar":        lambda a: tool_space_funding_radar(**a),
+    "executive_move_tracker":     lambda a: tool_executive_move_tracker(**a),
+    "trading_behavior_analyzer":  lambda a: tool_trading_behavior_analyzer(**a),
+    "media_reputation_monitor":   lambda a: tool_media_reputation_monitor(**a),
+    "satellite_launch_scheduler": lambda a: tool_satellite_launch_scheduler(**a),
+    "space_law_pipeline":         lambda a: tool_space_law_pipeline(**a),
+    "life_os_snapshot":           lambda a: tool_life_os_snapshot(a),
 }
 
 SESSION_ID = "jarvis-intel-1"

@@ -24,6 +24,7 @@ MCP_SERVERS = {
     "intel":     "http://127.0.0.1:8004",
     "email":     "http://127.0.0.1:8005",
     "notion":    "http://127.0.0.1:8006",
+    "browser":   "http://127.0.0.1:8007",
 }
 
 INIT_PAYLOAD = json.dumps({
