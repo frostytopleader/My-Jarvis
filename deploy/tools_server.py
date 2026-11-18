@@ -1,24 +1,33 @@
 """
 Jarvis Custom Tools MCP Server — port 8003 (internal only)
 Tools:
-  Core   : read_file, write_note
+  Core    : read_file, write_note
   Calendar: get_calendar, create_calendar_event
   Browser : web_scrape, screenshot_page, web_form_fill,
             monitor_website, pdf_extractor
+  Monitor : watch_url, unwatch_url, list_watches
+            (background thread polls every MONITOR_INTERVAL seconds and
+             sends a Twilio SMS when a watched URL changes)
 
 Google Calendar requires: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET,
   GOOGLE_REFRESH_TOKEN (optionally GOOGLE_CALENDAR_ID, default "primary")
+Twilio SMS alerts require: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+  TWILIO_PHONE_NUMBER, JARVIS_NOTIFY_NUMBER (default +13032699875)
 Browser tools require playwright + pypdf (installed in build.sh).
 """
 import asyncio
+import base64
 import hashlib
 import json
 import os
 import sqlite3
 import tempfile
+import threading
+import time
 import traceback
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -53,6 +62,15 @@ GCAL_MISSING = (
     "Set GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, and GOOGLE_REFRESH_TOKEN "
     "in Railway environment variables."
 )
+
+# ── Twilio (for proactive SMS alerts from background monitor) ──────────────────
+TWILIO_SID    = os.environ.get("TWILIO_ACCOUNT_SID", "")
+TWILIO_TOKEN  = os.environ.get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM   = os.environ.get("TWILIO_PHONE_NUMBER", "")
+TWILIO_TO     = os.environ.get("JARVIS_NOTIFY_NUMBER", "+13032699875")
+
+# How often the background watcher polls (default 10 min; override with env var)
+MONITOR_INTERVAL = int(os.environ.get("MONITOR_INTERVAL_SECONDS", "600"))
 
 
 # ── Tool implementations ───────────────────────────────────────────────────────
@@ -383,6 +401,149 @@ def tool_monitor_website(url: str, reset: bool = False) -> str:
     )
 
 
+# ── Monitor DB schema helper ───────────────────────────────────────────────────
+
+def _ensure_monitor_schema(db: sqlite3.Connection):
+    db.execute("""CREATE TABLE IF NOT EXISTS monitors (
+        url          TEXT PRIMARY KEY,
+        hash         TEXT,
+        snippet      TEXT,
+        checked_at   TEXT,
+        title        TEXT,
+        watch_active INTEGER DEFAULT 0,
+        label        TEXT    DEFAULT ''
+    )""")
+    for col, defn in [("watch_active", "INTEGER DEFAULT 0"), ("label", "TEXT DEFAULT ''")]:
+        try:
+            db.execute(f"ALTER TABLE monitors ADD COLUMN {col} {defn}")
+        except sqlite3.OperationalError:
+            pass  # already exists
+
+
+# ── Background monitor ─────────────────────────────────────────────────────────
+
+def _send_alert_sms(body: str):
+    if not all([TWILIO_SID, TWILIO_TOKEN, TWILIO_FROM, TWILIO_TO]):
+        print("[monitor] SMS skipped — set TWILIO_AUTH_TOKEN + JARVIS_NOTIFY_NUMBER")
+        return
+    data = urllib.parse.urlencode({"To": TWILIO_TO, "From": TWILIO_FROM, "Body": body}).encode()
+    auth = base64.b64encode(f"{TWILIO_SID}:{TWILIO_TOKEN}".encode()).decode()
+    req  = urllib.request.Request(
+        f"https://api.twilio.com/2010-04-01/Accounts/{TWILIO_SID}/Messages.json",
+        data=data,
+        headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            sid = json.loads(r.read()).get("sid", "?")
+        print(f"[monitor] Alert SMS sent ({sid})")
+    except Exception as e:
+        print(f"[monitor] SMS failed: {e}")
+
+
+def _run_monitor_cycle():
+    if not MONITOR_DB.exists():
+        return
+    with sqlite3.connect(str(MONITOR_DB)) as db:
+        _ensure_monitor_schema(db)
+        rows = db.execute(
+            "SELECT url, label FROM monitors WHERE watch_active=1"
+        ).fetchall()
+    if not rows:
+        return
+    print(f"[monitor] Checking {len(rows)} watched URL(s)…")
+    for url, label in rows:
+        try:
+            result = tool_monitor_website(url)
+            if result.startswith("CHANGE DETECTED"):
+                name = label or url
+                # Keep SMS concise — first 320 chars of result
+                sms = f"Jarvis: Change on {name}\n{url}\n\n{result[result.find(chr(10))+1:][:280]}"
+                _send_alert_sms(sms)
+                print(f"[monitor] Change → alert sent for {url}")
+            else:
+                print(f"[monitor] No change: {url}")
+        except Exception as e:
+            print(f"[monitor] Error on {url}: {e}")
+
+
+def _monitor_loop():
+    print(f"[monitor] Background watcher started — interval {MONITOR_INTERVAL}s")
+    time.sleep(20)  # let the server finish starting
+    while True:
+        try:
+            _run_monitor_cycle()
+        except Exception as e:
+            print(f"[monitor] Cycle error: {e}")
+        time.sleep(MONITOR_INTERVAL)
+
+
+# ── Watch management tools ─────────────────────────────────────────────────────
+
+def tool_watch_url(url: str, label: str = "") -> str:
+    """Add a URL to background monitoring — Jarvis texts Andre when it changes."""
+    if err := _require_playwright():
+        return err
+    # Scrape once to set baseline
+    baseline = tool_monitor_website(url, reset=True)
+    # Mark as active watch
+    with sqlite3.connect(str(MONITOR_DB)) as db:
+        _ensure_monitor_schema(db)
+        db.execute(
+            "UPDATE monitors SET watch_active=1, label=? WHERE url=?",
+            (label or url, url),
+        )
+    name = label or url
+    return (
+        f"Now watching: {name}\n"
+        f"Baseline captured. Jarvis will check every {MONITOR_INTERVAL // 60} minute(s) "
+        f"and text {TWILIO_TO} if anything changes.\n\n"
+        f"Baseline: {baseline}"
+    )
+
+
+def tool_unwatch_url(url: str) -> str:
+    """Remove a URL from background monitoring."""
+    if not MONITOR_DB.exists():
+        return f"Not watching any URLs yet."
+    with sqlite3.connect(str(MONITOR_DB)) as db:
+        _ensure_monitor_schema(db)
+        row = db.execute("SELECT label FROM monitors WHERE url=?", (url,)).fetchone()
+        if not row:
+            return f"URL not found in watch list: {url}"
+        db.execute("UPDATE monitors SET watch_active=0 WHERE url=?", (url,))
+    name = row[0] or url
+    return f"Stopped watching: {name}"
+
+
+def tool_list_watches() -> str:
+    """List all URLs currently being watched by the background monitor."""
+    if not MONITOR_DB.exists():
+        return "No URLs are being watched. Use watch_url to add one."
+    with sqlite3.connect(str(MONITOR_DB)) as db:
+        _ensure_monitor_schema(db)
+        active = db.execute(
+            "SELECT url, label, checked_at FROM monitors WHERE watch_active=1 ORDER BY checked_at DESC"
+        ).fetchall()
+        inactive = db.execute(
+            "SELECT url, label FROM monitors WHERE watch_active=0"
+        ).fetchall()
+    if not active and not inactive:
+        return "No URLs in monitor database. Use watch_url to add one."
+    lines = []
+    if active:
+        lines.append(f"Actively watching ({len(active)}):")
+        for url, label, checked_at in active:
+            lines.append(f"  ✓ {label or url}\n    {url}\n    Last checked: {checked_at or 'pending'}")
+    if inactive:
+        lines.append(f"\nPaused / manual-only ({len(inactive)}):")
+        for url, label in inactive:
+            lines.append(f"  — {label or url}")
+    lines.append(f"\nInterval: every {MONITOR_INTERVAL // 60} minute(s)")
+    lines.append(f"Alerts → {TWILIO_TO}")
+    return "\n".join(lines)
+
+
 def tool_pdf_extractor(url: str, max_pages: int = 15) -> str:
     """Download a PDF from a URL and extract its text content."""
     if not PYPDF_OK:
@@ -578,6 +739,48 @@ TOOLS = [
             "required": ["url"],
         },
     },
+    # ── Proactive background monitor tools ───────────────────────────────────
+    {
+        "name": "watch_url",
+        "description": (
+            "Add a URL to Jarvis's background monitor. "
+            "Jarvis will check it every 10 minutes and TEXT ANDRE via SMS if it changes. "
+            "Perfect for internship/job postings at Apple, SpaceX, etc.; competitor pricing; "
+            "news articles; real estate listings; SEC EDGAR filings. "
+            "Pass a human-readable label so the SMS alert is clear (e.g. 'SpaceX Internships')."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url":   {"type": "string", "description": "Full URL to watch"},
+                "label": {"type": "string", "default": "", "description": "Short human label for SMS alerts (e.g. 'Apple Jobs')"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "unwatch_url",
+        "description": "Stop watching a URL — remove it from background monitoring.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to stop watching"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "name": "list_watches",
+        "description": (
+            "List all URLs Jarvis is currently monitoring in the background, "
+            "plus paused/manual ones and the check interval."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
 ]
 
 TOOL_FNS = {
@@ -590,13 +793,23 @@ TOOL_FNS = {
     "web_form_fill":         lambda a: tool_web_form_fill(**a),
     "monitor_website":       lambda a: tool_monitor_website(**a),
     "pdf_extractor":         lambda a: tool_pdf_extractor(**a),
+    "watch_url":             lambda a: tool_watch_url(**a),
+    "unwatch_url":           lambda a: tool_unwatch_url(**a),
+    "list_watches":          lambda a: tool_list_watches(),
 }
 
 SESSION_ID = "jarvis-tools-1"
 
 # ── MCP HTTP server ────────────────────────────────────────────────────────────
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    t = threading.Thread(target=_monitor_loop, daemon=True)
+    t.start()
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 @app.post("/")
@@ -657,4 +870,6 @@ if __name__ == "__main__":
     print(f"Jarvis tools server starting on port 8003")
     print(f"  Notes dir : {NOTES_DIR}")
     print(f"  Google Cal: {'configured' if GC_REFRESH_TOKEN else 'NOT configured (set GOOGLE_* vars)'}")
+    print(f"  Monitor   : every {MONITOR_INTERVAL}s → SMS to {TWILIO_TO}")
+    print(f"  Twilio    : {'configured' if TWILIO_TOKEN else 'NOT configured (set TWILIO_AUTH_TOKEN)'}")
     uvicorn.run(app, host="127.0.0.1", port=8003, log_level="info")
