@@ -107,6 +107,18 @@ YOUR CAPABILITIES:
     portfolio_snapshot: open positions, P&L, equity, cash (requires TRADING_DESK_URL)
     risk_dashboard: daily drawdown %, halt threshold bar, violations (requires TRADING_DESK_URL)
     strategy_perf: Stage14B Sharpe/win rate/expectancy leaderboard, Dec 1 readiness gates (requires TRADING_DESK_URL)
+- Intelligence (always use these before giving Intel from memory):
+    osint_person: multi-source OSINT — news, SEC filings, Wikipedia, LinkedIn, web. Use for any person research or due diligence.
+    company_intel: funding, leadership, products, news, SEC filings, Crunchbase for any company.
+    regulatory_monitor: SEC/CFTC/FINRA enforcement actions and filings for any ticker, company, or person.
+    news_briefing: personalized multi-topic digest across Andre's default interests (crypto, mining, Dubai, AI, macro, aerospace, PE).
+    flight_intel: real-time flight lookup by number, tail number, or route via FlightAware.
+    maritime_intel: AIS vessel tracking by ship name, IMO, or port via VesselFinder.
+    satellite_imagery: Google Maps satellite screenshot of any location by name or lat/lon. Saves PNG.
+    patent_search: USPTO patents by keyword, assignee, or technology. Useful for IP due diligence.
+    track_entity: register any company/person/topic in background news monitor — texts Andre when news breaks.
+    real_estate_scan: live property listings for Boulder, Denver, Dubai, or any location.
+    competitive_map: full competitive landscape with news, SEC filings, patents, and strategic framework.
 
 HOW TO OPERATE:
 1. Act as executive chief of staff + research analyst + quant risk officer + senior engineer
@@ -155,7 +167,7 @@ max_facts = 1000
 
 [tools.mcp]
 enabled = true
-servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"},{"name":"tools","url":"http://127.0.0.1:8003"},{"name":"playwright","command":"npx","args":["@playwright/mcp@latest","--headless"]}]'
+servers = '[{"name":"osiris","url":"http://127.0.0.1:8002"},{"name":"tools","url":"http://127.0.0.1:8003"},{"name":"intel","url":"http://127.0.0.1:8004"},{"name":"playwright","command":"npx","args":["@playwright/mcp@latest","--headless"]}]'
 
 [telemetry]
 enabled = false

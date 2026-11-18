@@ -23,9 +23,13 @@ print('Config written to ~/.openjarvis/config.toml')
 echo "Starting OSIRIS MCP bridge on port 8002..."
 uv run --project openjarvis python deploy/osiris_bridge.py &
 
-# Start custom tools MCP server on port 8003 (file read/write, Google Calendar)
+# Start custom tools MCP server on port 8003 (file read/write, calendar, trading, monitor)
 echo "Starting custom tools server on port 8003..."
 uv run --project openjarvis python deploy/tools_server.py &
+
+# Start intel MCP server on port 8004 (OSINT, company intel, flight/maritime, satellite, patents)
+echo "Starting intel server on port 8004..."
+uv run --project openjarvis python deploy/intel_server.py &
 
 sleep 3
 
