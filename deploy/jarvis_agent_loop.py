@@ -43,7 +43,7 @@ JARVIS_DIR  = Path(os.path.expanduser("~/.openjarvis"))
 NOTES_DIR   = JARVIS_DIR / "notes"
 DB_PATH     = str(JARVIS_DIR / "agency.db")
 
-LOOP_INTERVAL_SEC   = 1800   # run every 30 minutes
+LOOP_INTERVAL_SEC   = 300    # run every 5 minutes
 CALL_COOLDOWN_SEC   = 7200   # never call more than once per 2 hours
 SMS_COOLDOWN_SEC    = 3600   # never SMS more than once per hour
 QUIET_HOURS_START   = 23     # 11 PM MT (06:00 UTC next day) — no calls/SMS
@@ -366,7 +366,7 @@ def _execute(decision: str, context: dict):
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 def run():
-    log.info("Jarvis agency loop started — interval: 30 min")
+    log.info("Jarvis agency loop started — interval: 5 min")
     while True:
         try:
             log.info("Agency check running…")
