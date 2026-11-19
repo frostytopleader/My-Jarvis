@@ -187,7 +187,7 @@ def _collect_context() -> dict:
     underroof_news = _mcp(8003, "market_news",
                           {"query": "home inventory insurance app homeowner iPhone startup Encircle Sortly", "max_items": 3})
     nexflow_news   = _mcp(8003, "market_news",
-                          {"query": "AI automation workflow SaaS startup funding Zapier Make n8n enterprise", "max_items": 3})
+                          {"query": "AI automation workflow agency consulting manual process pain small business", "max_items": 3})
 
     # Notion memory — recent call topics (what has been discussed)
     call_log = _mcp(8006, "notion_read_database",
@@ -284,8 +284,10 @@ business operator. Ask yourself:
 UNDERROOF: Did a competitor (Encircle, Sortly, Lemonade) make a move? Insurance industry news \
 relevant to a home inventory product? A partnership angle worth flagging? App store news?
 
-NEXFLOW AI: AI automation funding round? Market signal suggesting reactivation? Prospect or \
-partner opportunity worth noting?
+NEXFLOW AI (ACTIVE, OUTREACH PHASE): News about agency/consulting/service business pain points \
+(manual workflows, lead handling, onboarding chaos)? A specific company in the news that fits ICP \
+(1–20 person agencies, consulting firms, service businesses)? Competitor (Zapier/Make/n8n) doing \
+something that creates a sales angle? Log strong prospects as NOTION entries for the Deal Tracker.
 
 TRADING DESK: BTC significant move, fear/greed extreme, macro event, options expiry?
 

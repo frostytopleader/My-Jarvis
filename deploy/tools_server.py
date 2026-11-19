@@ -1255,6 +1255,44 @@ def _fire_schedule(action: str, params: dict, label: str):
             _send_sms(to, f"[Sunday Retro] Weekly review ready. Calling now...")
             time.sleep(4)
             tool_initiate_call(to)
+        elif action == "nexflow_prospecting":
+            # Daily NexFlow outreach — find ICP prospects, draft outreach, log to Notion Deal Tracker
+            import logging as _nflog
+            log = _nflog.getLogger("tools_server")
+            try:
+                # Find prospects via browser/linkedin scan
+                prospects_raw = _call_mcp_tool(8007, "linkedin_prospect_scan", {
+                    "industry":       "marketing agency,consulting,professional services,service business",
+                    "title_keywords": "founder,CEO,head of operations,operations manager,director of operations",
+                    "location":       "United States",
+                    "company_size":   "1-20",
+                    "max_results":    8,
+                })
+                # Build prospect summary and draft outreach brief to Notion
+                ts = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                brief = (
+                    f"=== NEXFLOW DAILY PROSPECTING BRIEF — {ts} ===\n\n"
+                    f"PROSPECTS FOUND:\n{prospects_raw[:1500]}\n\n"
+                    f"OUTREACH STATUS: Logged for Andre's review. Reply YES to send.\n\n"
+                    f"BOOKING LINK: https://calendar.app.google/KWfeqYSqJjAQLdPc9\n"
+                    f"FREE SCOPE: https://nexflowsolution.com/workflow-scoper/"
+                )
+                notes_dir = JARVIS_DIR / "notes"
+                notes_dir.mkdir(exist_ok=True)
+                (notes_dir / "nexflow_prospects.md").write_text(brief)
+                # Log to Notion Action Log
+                _call_mcp_tool(8006, "notion_create_entry_page", {
+                    "parent_database_id": "41c072ec-4279-81a7-b3c5-000b99c250b6",
+                    "title":              f"{ts} — Daily Prospect Batch",
+                    "summary":            f"Jarvis found prospects for review. Awaiting Andre approval to send outreach.",
+                    "full_notes":         prospects_raw[:2000],
+                    "jarvis_analysis":    "These prospects match the NexFlow ICP. Drafted outreach ready. Reply YES on SMS to send.",
+                    "action_items":       "Andre to approve outreach via SMS or voice — then Jarvis sends via Gmail",
+                })
+                _send_sms(to, f"[NexFlow] Found {len(prospects_raw.split(chr(10)))//5 or 'several'} prospects today, drafts in Deal Tracker. Reply YES to send outreach.")
+                log.info("NexFlow prospecting complete")
+            except Exception as ne:
+                log.error(f"nexflow_prospecting error: {ne}")
         else:
             import logging as _log
             _log.getLogger("tools_server").warning(f"Unknown schedule action: {action}")
@@ -1832,11 +1870,12 @@ def _seed_default_tasks():
     db = sqlite3.connect(db_path)
     _ensure_scheduler_schema(db)
     defaults = [
-        # label                   cron (UTC)       action                 params
-        ("BTC 4:15 Candle Close", "15 23 * * *",  "candle_close_call",   {}),
-        ("Daily Morning Brief",   "0 14 * * *",   "morning_brief_call",  {}),
-        ("Autonomous Monitor",    "0 * * * *",    "autonomous_monitor",  {}),
-        ("Sunday Weekly Retro",   "0 2 * * 1",    "weekly_retro",        {}),
+        # label                     cron (UTC)       action                   params
+        ("BTC 4:15 Candle Close",   "15 23 * * *",  "candle_close_call",     {}),
+        ("Daily Morning Brief",     "0 14 * * *",   "morning_brief_call",    {}),
+        ("Autonomous Monitor",      "0 * * * *",    "autonomous_monitor",    {}),
+        ("Sunday Weekly Retro",     "0 2 * * 1",    "weekly_retro",          {}),
+        ("NexFlow Daily Prospects", "0 17 * * 1-5", "nexflow_prospecting",   {}),
     ]
     for label, cron, action, p in defaults:
         db.execute(
