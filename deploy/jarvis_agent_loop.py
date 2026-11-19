@@ -175,11 +175,45 @@ def _write_brief(filename: str, content: str):
 
 # ── Context collector ──────────────────────────────────────────────────────────
 def _collect_context() -> dict:
-    ts  = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    btc = _mcp(8003, "crypto_price", {"symbols": "BTC,ETH,SOL"})
-    fg  = _mcp(8004, "fear_greed_composite", {"include_breakdown": True})
-    news = _mcp(8003, "market_news", {"query": "bitcoin crypto markets macro", "max_items": 5})
-    return {"timestamp": ts, "prices": btc, "fear_greed": fg, "news": news}
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Market data
+    btc  = _mcp(8003, "crypto_price", {"symbols": "BTC,ETH,SOL"})
+    fg   = _mcp(8004, "fear_greed_composite", {"include_breakdown": True})
+    news = _mcp(8003, "market_news",
+                {"query": "bitcoin crypto markets macro asteroid mining space", "max_items": 5})
+
+    # Notion memory — recent call topics (what has been discussed)
+    call_log = _mcp(8006, "notion_read_database",
+                    {"database_id": "41c072ec-4279-81f9-95b3-000bc0008c74", "max_rows": 5})
+
+    # Pending / recent actions
+    action_log = _mcp(8006, "notion_read_database",
+                      {"database_id": "41c072ec-4279-81f7-8f82-000bc6e8ed09", "max_rows": 8})
+
+    # Entities Andre is actively monitoring
+    entity_mon = _mcp(8006, "notion_read_database",
+                      {"database_id": "41c072ec-4279-81e6-ae63-000b3970e27a", "max_rows": 10})
+
+    # Decision log (what choices have been made recently)
+    decisions = _mcp(8006, "notion_read_database",
+                     {"database_id": "41c072ec-4279-8129-9584-000bab322463", "max_rows": 5})
+
+    # Andre's full dossier (local file written at startup)
+    dossier_path = Path(os.path.expanduser("~/.openjarvis/andre-dossier.md"))
+    dossier = dossier_path.read_text()[:1200] if dossier_path.exists() else "[dossier unavailable]"
+
+    return {
+        "timestamp":      ts,
+        "prices":         btc,
+        "fear_greed":     fg,
+        "news":           news,
+        "recent_calls":   call_log,
+        "pending_actions": action_log,
+        "entity_monitor": entity_mon,
+        "recent_decisions": decisions,
+        "dossier":        dossier,
+    }
 
 
 # ── Anthropic reasoning call ───────────────────────────────────────────────────
@@ -200,37 +234,57 @@ def _ask_jarvis(context: dict) -> str:
         if last_sms else "never"
     )
 
-    prompt = f"""You are Jarvis running an autonomous agency check at {ts}.
+    prompt = f"""You are Jarvis — Andre Champeau's autonomous AI chief of staff — running an \
+unsolicited agency check at {ts}. Andre is NOT on a call right now. You are acting \
+on your own initiative with standing permission to call, text, or log at any time.
 
-Andre has given standing permission for proactive calls, SMS, and Notion writes.
-Last call: {call_ago}. Last SMS: {sms_ago}.
-Cooldowns: calls every 2h, SMS every 1h.
+Last call you placed: {call_ago}. Last SMS: {sms_ago}.
+Cooldowns enforced by the system: calls ≥2h apart, SMS ≥1h apart.
 
-CURRENT MARKET STATE:
+━━━ ANDRE — WHO HE IS AND WHAT HE CARES ABOUT ━━━
+{context['dossier'][:900]}
+
+━━━ RECENT CALLS (topics discussed) ━━━
+{context['recent_calls'][:700]}
+
+━━━ PENDING ACTIONS (from recent calls) ━━━
+{context['pending_actions'][:600]}
+
+━━━ ENTITIES BEING MONITORED ━━━
+{context['entity_monitor'][:500]}
+
+━━━ RECENT DECISIONS ━━━
+{context['recent_decisions'][:400]}
+
+━━━ MARKET STATE RIGHT NOW ━━━
 {context['prices']}
 
-FEAR/GREED COMPOSITE:
-{context['fear_greed'][:400]}
+━━━ FEAR / GREED ━━━
+{context['fear_greed'][:300]}
 
-TOP NEWS:
+━━━ MARKET & WORLD NEWS ━━━
 {context['news'][:800]}
 
-Based on this, decide what action (if any) to take:
+━━━ YOUR JOB ━━━
+Using ALL of the above — not just market data — decide what Jarvis should do \
+RIGHT NOW without being prompted. Think like a chief of staff who checks in \
+proactively: Did something come up in the news that relates to what Andre discussed \
+on a recent call? Is a pending action overdue? Is a monitored entity in the news? \
+Did market conditions cross a threshold that matters given Andre's trading desk goals?
 
-Reply with EXACTLY ONE of these formats:
+Reply with EXACTLY ONE line in one of these formats:
   NOOP
-  SMS: [message to send Andre, max 300 chars]
-  CALL: [one-line reason why calling, max 100 chars]
-  NOTION: [title] | [brief summary to log to Action Log]
+  SMS: <message to Andre, plain text, max 300 chars>
+  CALL: <one-line reason Jarvis is calling, max 100 chars>
+  NOTION: <entry title> | <summary to log to Action Log>
 
-Thresholds to guide you:
-- Call if BTC moved >5% in 24h, fear/greed is extreme (<15 or >85), or genuinely critical news
-- SMS for notable moves (3-5%), interesting macro news, or useful market intel
-- NOTION to log significant market events autonomously
-- NOOP if nothing warrants attention right now
-- Do not call during quiet hours (11pm-6am MT) — the system handles this, so decide as if awake
+Guidance:
+- CALL: BTC ≥5% move, fear/greed extreme (<15 or >85), breaking news directly relevant to CMC/SAC/trading desk, or a time-sensitive pending action
+- SMS: notable market moves (3–5%), news relevant to recent call topics, monitored entity update, upcoming deadlines
+- NOTION: log significant autonomous observations even when no action is taken
+- NOOP: genuinely nothing worth surfacing
 
-Respond with ONLY the action line. Nothing else."""
+One line only. No explanation."""
 
     payload = json.dumps({
         "model": "claude-haiku-4-5",
